@@ -71,24 +71,41 @@ function M.get(pinfo)
             -- reply on class 0x349 is a stream of fixed-stride pages
             -- (v36: 458B) whose record bodies routinely straddle page
             -- boundaries — see cip_upload/extract_logix_data.py:1090.
-            -- Reassembly is conv-scoped because pagination is driven by
-            -- the client's request-offset and there is no per-chunk
-            -- header on the wire to key off frame-globally.
-            docs_stream      = nil,
+            -- Pagination is driven by the client's request-offset and
+            -- there is no per-chunk header on the wire to key off
+            -- frame-globally, so each accumulator is scoped to a
+            -- (TCP-stream, cip.connid) pair: one TCP stream can carry
+            -- multiple concurrent CIP connections, each running its
+            -- own 0x349 read, and splicing their pages into one buffer
+            -- would corrupt the record walk across the boundary.
+            docs_streams     = nil,    -- connid -> stream record;
+                                       -- lazily allocated
         }
         sessions[k] = s
     end
     return s
 end
 
--- Open (or reset) the per-conversation docs accumulator. Called when a
--- 0x349 reply arrives and either no stream is in flight or the prior
--- stream has been closed. `frame_results` survives the reset so cached
--- per-frame render data from the prior stream isn't lost.
-function M.docs_stream_open(pinfo)
+-- Stable map key for cip.connid. nil collapses to a single shared
+-- "unknown" bucket — that matches pre-E3 behavior for code paths where
+-- connid isn't surfaced (older non-signed replies).
+local function connid_key(connid)
+    if connid == nil then return 0 end
+    return connid
+end
+
+-- Open (or reset) the per-(conversation, connid) docs accumulator.
+-- Called when a 0x349 reply arrives and either no stream is in flight
+-- on this connid or the prior stream has been closed. `frame_results`
+-- survives the reset so cached per-frame render data from the prior
+-- stream isn't lost.
+function M.docs_stream_open(pinfo, connid)
     local s = M.get(pinfo)
-    local prior_results = s.docs_stream and s.docs_stream.frame_results or {}
-    s.docs_stream = {
+    s.docs_streams = s.docs_streams or {}
+    local key = connid_key(connid)
+    local prior = s.docs_streams[key]
+    local prior_results = prior and prior.frame_results or {}
+    s.docs_streams[key] = {
         -- 1-indexed list of ingested chunks in arrival order:
         --   { frame = u32, accum_off = u32, page_size = u32 }
         chunks          = {},
@@ -114,7 +131,15 @@ function M.docs_stream_open(pinfo)
         -- of `tshark -2` replays from here without re-ingesting.
         frame_results   = prior_results,
     }
-    return s.docs_stream
+    return s.docs_streams[key]
+end
+
+-- Fetch the in-flight (or most recently closed) docs stream for this
+-- conv + connid, or nil if none has ever been opened.
+function M.docs_stream_get(pinfo, connid)
+    local s = M.get(pinfo)
+    if not s.docs_streams then return nil end
+    return s.docs_streams[connid_key(connid)]
 end
 
 local override_key = nil

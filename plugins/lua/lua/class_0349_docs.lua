@@ -764,6 +764,7 @@ function M.register(proto, valstr, ctx)
 
     local field_cip_service = Field.new("cip.service")
     local field_cip_epath   = Field.new("cip.epath")
+    local field_cip_connid  = Field.new("cip.connid")
     -- cip.request_frame is a generated field the stock cip dissector
     -- emits on replies when conversation tracking succeeds. Optional —
     -- not present in older builds — so guard with pcall.
@@ -986,8 +987,14 @@ function M.register(proto, valstr, ctx)
         -- re-ingest. Same path also covers the case where we're called
         -- on a frame whose stream was reset (closed flag tripped) since
         -- the prior frame_results entry is still valid.
-        local sess = session.get(pinfo)
-        local stream = sess.docs_stream
+        --
+        -- Stream lookup is keyed by cip.connid so two concurrent CIP
+        -- connections on the same TCP stream each get their own
+        -- accumulator; splicing their pages into one buffer would
+        -- corrupt cross-page record assembly at the boundary.
+        local connid_fi = field_cip_connid()
+        local connid    = connid_fi and connid_fi.value
+        local stream = session.docs_stream_get(pinfo, connid)
         local cached = stream and stream.frame_results[pinfo.number]
 
         if not cached then
@@ -1003,7 +1010,7 @@ function M.register(proto, valstr, ctx)
                                and (not stream or stream.closed)
             if not fresh_zero then
                 if not stream or stream.closed then
-                    stream = session.docs_stream_open(pinfo)
+                    stream = session.docs_stream_open(pinfo, connid)
                 end
                 -- Carved-fixture gap detection: if this reply's echoed
                 -- request offset is not exactly first_page_size past
@@ -1014,7 +1021,7 @@ function M.register(proto, valstr, ctx)
                 if stream.last_req_offset and req_offset
                    and req_offset ~= stream.last_req_offset
                                      + (stream.first_page_size or 0) then
-                    stream = session.docs_stream_open(pinfo)
+                    stream = session.docs_stream_open(pinfo, connid)
                 end
                 if not stream.first_page_size then
                     stream.first_page_size = #page_data
