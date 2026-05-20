@@ -44,8 +44,25 @@ function M.get(pinfo)
             candidate_key_lo = nil,   -- challenge[0:64]
             candidate_key_hi = nil,   -- challenge[64:128]
             response         = nil,   -- 20B Phase 2 request body
-            hmac_key         = nil,   -- key proven to validate HMACs
-                                       -- on this stream (set by signed)
+            -- HMAC keys derived on this stream. One TCP stream can
+            -- carry many concurrent / sequential CIP connections,
+            -- each authed by its own Phase 1 with a fresh challenge
+            -- nonce, so the set grows over time. The signed-frame
+            -- dissectors try every key in `hmac_keys` and cache the
+            -- match on `connid_to_key` for O(1) lookup thereafter.
+            hmac_key          = nil,   -- most recently derived key
+                                        -- (legacy "current key" used
+                                        --  as the first candidate)
+            hmac_keys         = nil,   -- list of all derived keys for
+                                        -- this stream, in observed
+                                        -- order; lazily allocated
+            keys_by_challenge = nil,   -- challenge_bytes -> key, used
+                                        -- by the handshake module to
+                                        -- skip the modexp on pass 2
+                                        -- of `tshark -2`
+            connid_to_key     = nil,   -- cip.connid -> matched key,
+                                        -- populated by signed dissect
+                                        -- on first verified frame
             pending_requests = {
                 by_seq   = {},        -- [signed seq u32] -> req record
                 by_frame = {},        -- [req frame number] -> req record
@@ -136,6 +153,29 @@ function M.candidate_keys(pinfo)
     if s.candidate_key_lo then table.insert(out, s.candidate_key_lo) end
     if s.candidate_key_hi then table.insert(out, s.candidate_key_hi) end
     return out
+end
+
+-- Returns every HMAC key the handshake module has derived on this
+-- stream so far. Signed-frame dissectors iterate this list when
+-- effective_key() doesn't match (multiple concurrent CIP connections
+-- on one TCP stream each carry their own key).
+function M.hmac_keys(pinfo)
+    local s = M.get(pinfo)
+    return s.hmac_keys or {}
+end
+
+-- connid -> key lookup. Once a signed frame on connid N validates
+-- against key K, every subsequent frame on connid N hits this cache
+-- and skips re-trying the whole key list.
+function M.key_for_connid(pinfo, connid)
+    local s = M.get(pinfo)
+    return s.connid_to_key and s.connid_to_key[connid] or nil
+end
+
+function M.cache_key_for_connid(pinfo, connid, key)
+    local s = M.get(pinfo)
+    s.connid_to_key = s.connid_to_key or {}
+    s.connid_to_key[connid] = key
 end
 
 function M.reset()

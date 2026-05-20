@@ -138,7 +138,7 @@ function M.register(proto, valstr, ctx)
     -- the parsed key is reused across all streams on the same Lua run.
     -- A bad path / bad PEM is cached as `false` so we don't retry on
     -- every dissect.
-    local rsa, pem, bigint
+    local rsa, pem, bigint, sha1
     local cached_key_path = nil
     local cached_key      = nil
 
@@ -155,6 +155,7 @@ function M.register(proto, valstr, ctx)
         rsa    = rsa    or require "rsa"
         pem    = pem    or require "pem"
         bigint = bigint or require "bigint"
+        sha1   = sha1   or require "sha1"
         local ok, parsed = pcall(pem.parse_private_key, path)
         if not ok then
             io.stderr:write(string.format(
@@ -167,11 +168,23 @@ function M.register(proto, valstr, ctx)
         return parsed
     end
 
-    -- Decrypt + cache the HMAC key for this conversation. Idempotent:
-    -- subsequent Phase 1 frames on the same conv hit the cached key.
-    -- Returns a status string ("derived", "skipped", "failed").
+    -- Decrypt the Phase 1 challenge and stash the resulting HMAC key.
+    -- A single ENIP TCP stream can carry many concurrent (and
+    -- sequential) CIP connections, each opened by its own Forward
+    -- Open + Phase 1 with a fresh challenge nonce — every Phase 1
+    -- produces a *different* HMAC key. We append each derived key to
+    -- the session's key list; the signed-frame dissectors try them
+    -- all and cache the connid→key mapping on first match. Pass-2 of
+    -- `tshark -2` (and any frame re-dissect) hits the
+    -- keys_by_challenge cache so we don't repeat the ~3s modexp.
+    -- Returns "derived" / "already-set" / "no-key" / "failed".
     local function derive_hmac_key(sess, challenge_bytes, subtree)
-        if sess.hmac_key then return "already-set" end
+        sess.keys_by_challenge = sess.keys_by_challenge or {}
+        local cached = sess.keys_by_challenge[challenge_bytes]
+        if cached then
+            sess.hmac_key = cached
+            return "already-set"
+        end
         local key = load_rsa_key()
         if not key then return "no-key" end
 
@@ -183,7 +196,11 @@ function M.register(proto, valstr, ctx)
             return "failed"
         end
         if #result < 64 then return "failed" end
-        sess.hmac_key = result:sub(1, 64)
+        local hmac_key = result:sub(1, 64)
+        sess.keys_by_challenge[challenge_bytes] = hmac_key
+        sess.hmac_keys = sess.hmac_keys or {}
+        table.insert(sess.hmac_keys, hmac_key)
+        sess.hmac_key = hmac_key
         return "derived"
     end
 
@@ -237,8 +254,15 @@ function M.register(proto, valstr, ctx)
                 -- silently when the preference is unset or the key
                 -- already matched a prior frame on this conversation.
                 local result = derive_hmac_key(sess, raw, subtree)
+                if result == "derived" or result == "already-set" then
+                    -- ProtoField.bytes wants a TvbRange, not a raw Lua
+                    -- string — synthesize a one-off Tvb from the hex.
+                    subtree:add(f.derived_hmac,
+                        ByteArray.new(sha1.to_hex(sess.hmac_key))
+                            :tvb("derived hmac key"):range()
+                    ):set_generated()
+                end
                 if result == "derived" then
-                    subtree:add(f.derived_hmac, sess.hmac_key):set_generated()
                     subtree:add(f.kdf_status, "derived"):set_generated()
                     subtree:add_proto_expert_info(expert_kdf_ok)
                     kdf_status = "derived"

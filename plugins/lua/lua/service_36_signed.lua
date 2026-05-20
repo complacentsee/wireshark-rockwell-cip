@@ -98,6 +98,7 @@ function M.register(proto, valstr, ctx)
     end
 
     local field_cip_service = Field.new("cip.service")
+    local field_cip_connid  = Field.new("cip.connid")
     local cip_dis = Dissector.get("cip")
 
     local function dissect(tvb, pinfo, tree)
@@ -203,14 +204,54 @@ function M.register(proto, valstr, ctx)
             return sha1.hmac(k, body) == got
         end
 
-        local key = session.effective_key(pinfo)
-        local matched = false
-        if key and try_key(key) then
-            matched = true
-        else
-            -- Fall back to candidate keys from the handshake.
-            -- If one matches, promote it on the session so future
-            -- frames use it directly.
+        -- Multiple CIP connections can be multiplexed on a single TCP
+        -- stream — each with its own Phase 1 and HMAC key. Resolution
+        -- order: (1) the per-connid cache from a prior verified frame,
+        -- (2) the override / current session key, (3) every key the
+        -- handshake module has derived on this stream, (4) the raw
+        -- challenge halves as a last-ditch candidate. On a verified
+        -- match we pin the (connid → key) mapping so subsequent frames
+        -- on the same connection skip straight to the right key.
+        local connid_fi = field_cip_connid()
+        local connid    = connid_fi and connid_fi.value
+        local matched   = false
+        local key       = nil
+
+        if connid then
+            local cached = session.key_for_connid(pinfo, connid)
+            if cached and try_key(cached) then
+                matched = true
+                key     = cached
+            end
+        end
+
+        if not matched then
+            local eff = session.effective_key(pinfo)
+            if eff and try_key(eff) then
+                matched = true
+                key     = eff
+                if connid then
+                    session.cache_key_for_connid(pinfo, connid, eff)
+                end
+            elseif eff then
+                key = eff  -- retain for MISMATCH render fallback
+            end
+        end
+
+        if not matched then
+            for _, k in ipairs(session.hmac_keys(pinfo)) do
+                if try_key(k) then
+                    matched = true
+                    key     = k
+                    if connid then
+                        session.cache_key_for_connid(pinfo, connid, k)
+                    end
+                    break
+                end
+            end
+        end
+
+        if not matched then
             local sess = session.get(pinfo)
             for _, candidate in ipairs(session.candidate_keys(pinfo)) do
                 if try_key(candidate) then

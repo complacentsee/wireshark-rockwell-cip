@@ -152,6 +152,7 @@ function M.register(proto, valstr, ctx)
         .. "implementation; can be slow on large payloads.")
 
     local field_cip_service = Field.new("cip.service")
+    local field_cip_connid  = Field.new("cip.connid")
     local cip_dis = Dissector.get("cip")
 
     local function decode_body(body_range, subtree, pinfo, is_reply)
@@ -340,10 +341,49 @@ function M.register(proto, valstr, ctx)
 
         local function try_key(k) return sha1.hmac(k, body) == got end
 
-        local key = session.effective_key(pinfo)
-        local matched = false
-        if key and try_key(key) then matched = true
-        else
+        -- See service_36_signed.lua for the rationale on the multi-key
+        -- resolution order — same path here since both wrappers share
+        -- the per-CIP-connection HMAC keying.
+        local connid_fi = field_cip_connid()
+        local connid    = connid_fi and connid_fi.value
+        local matched   = false
+        local key       = nil
+
+        if connid then
+            local cached = session.key_for_connid(pinfo, connid)
+            if cached and try_key(cached) then
+                matched = true
+                key     = cached
+            end
+        end
+
+        if not matched then
+            local eff = session.effective_key(pinfo)
+            if eff and try_key(eff) then
+                matched = true
+                key     = eff
+                if connid then
+                    session.cache_key_for_connid(pinfo, connid, eff)
+                end
+            elseif eff then
+                key = eff
+            end
+        end
+
+        if not matched then
+            for _, k in ipairs(session.hmac_keys(pinfo)) do
+                if try_key(k) then
+                    matched = true
+                    key     = k
+                    if connid then
+                        session.cache_key_for_connid(pinfo, connid, k)
+                    end
+                    break
+                end
+            end
+        end
+
+        if not matched then
             local sess = session.get(pinfo)
             for _, candidate in ipairs(session.candidate_keys(pinfo)) do
                 if try_key(candidate) then
