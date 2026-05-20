@@ -815,9 +815,17 @@ function M.register(proto, valstr, ctx)
     local field_cip_service = Field.new("cip.service")
     local field_cip_epath   = Field.new("cip.epath")
     local field_cip_connid  = Field.new("cip.connid")
-    -- cip.request_frame is a generated field the stock cip dissector
-    -- emits on replies when conversation tracking succeeds. Optional —
-    -- not present in older builds — so guard with pcall.
+    -- Stock ENIP's conversation tracker emits enip.response_to on
+    -- every reply, pointing at the matching request frame. We prefer
+    -- it over signed-CIP seq for request/reply pairing because seq
+    -- restarts at 1 on each new CIP connection, so two concurrent (or
+    -- back-to-back) connections on the same TCP stream alias each
+    -- other's pending requests under seq-keyed lookup.
+    local field_enip_response_to = Field.new("enip.response_to")
+    -- cip.request_frame is a generated field some cip dissector
+    -- builds emit on replies when their own conversation tracking
+    -- succeeds. Not always present — used as a secondary fallback
+    -- after enip.response_to.
     local ok_rf, field_cip_request_frame = pcall(Field.new, "cip.request_frame")
     if not ok_rf then field_cip_request_frame = nil end
 
@@ -851,6 +859,16 @@ function M.register(proto, valstr, ctx)
         if not field_cip_request_frame then return nil end
         local fi = field_cip_request_frame()
         return fi and fi.value or nil
+    end
+
+    -- Returns the request frame number from the most reliable available
+    -- stock-dissector tracker: enip.response_to first (universal),
+    -- cip.request_frame as a fallback for older Wireshark builds where
+    -- the ENIP field isn't emitted.
+    local function get_request_frame_hint()
+        local fi = field_enip_response_to()
+        if fi and fi.value then return fi.value end
+        return get_cip_request_frame()
     end
 
     -- Render one record's subtree under `parent`. `page_tvb_range` is
@@ -975,8 +993,12 @@ function M.register(proto, valstr, ctx)
             return
         end
 
-        -- Reply frame. Pair to its request.
-        local req = session.lookup_request(pinfo, seq, get_cip_request_frame())
+        -- Reply frame. Pair to its request — prefer the stock-dissector
+        -- frame_hint (enip.response_to / cip.request_frame) over seq
+        -- because signed-CIP seq aliases across CIP connections on the
+        -- same TCP stream.
+        local req = session.lookup_request(pinfo, seq,
+            get_request_frame_hint())
         if not req or req.class ~= 0x349 then return end
         req.reply_frame = pinfo.number
 

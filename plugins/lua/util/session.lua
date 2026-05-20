@@ -211,12 +211,16 @@ end
 -- code only the *request* exposes (e.g. class 0x0349 documentation
 -- reads, where the reply has no epath and so can't be self-identified)
 -- call record_request on the request frame and lookup_request on the
--- reply. The seq argument is the signed-CIP wrapper sequence number
--- (rockwell_cip.signed.seq) if known — same seq pairs request to reply
--- on the same conversation. frame_hint is the request frame number
--- when known via the stock cip dissector's conversation tracking
--- (cip.request_frame on the reply); used as a fallback when there's no
--- signed wrapper.
+-- reply. frame_hint is the request frame number from a stock-dissector
+-- conversation tracker (enip.response_to on the reply); it's the
+-- preferred match because it's globally unique. seq is the signed-CIP
+-- wrapper sequence number (rockwell_cip.signed.seq), used as a
+-- fallback when no frame_hint is available — but be aware that
+-- signed-seq restarts at 1 on each new CIP connection so two
+-- concurrent connections on one TCP stream can collide at the same
+-- seq (e.g. upload.pcapng has 15 distinct requests at seq=1 across
+-- its 12 sequential connections; the by_seq map "last writer wins"
+-- and the seq fallback would mis-pair across those boundaries).
 function M.record_request(pinfo, seq, target_class)
     local s = M.get(pinfo)
     local frame = pinfo.number
@@ -239,15 +243,26 @@ function M.record_request(pinfo, seq, target_class)
     return rec
 end
 
+-- When frame_hint is supplied (stock-dissector pairing succeeded), it
+-- is the AUTHORITATIVE answer — by_frame lookup returns the record at
+-- that frame or nil. We must NOT fall back to seq, because a nil here
+-- means "the stock dissector says the request is at frame X but we
+-- never recorded a request of interest there" (e.g. a handshake reply
+-- whose request frame doesn't carry the class-0x349 epath); the seq
+-- fallback would otherwise mis-pair the reply to an unrelated
+-- same-seq request from another CIP connection on this stream.
+--
+-- When frame_hint is absent (older Wireshark without ENIP conv-tracker
+-- or builds without cip.request_frame), fall back to seq. Be aware
+-- that seq aliases across CIP connections (signed-seq restarts at 1
+-- per connection), so the seq path is best-effort only.
 function M.lookup_request(pinfo, seq, frame_hint)
     local s = M.get(pinfo)
-    if seq then
-        local rec = s.pending_requests.by_seq[seq]
-        if rec then return rec end
-    end
     if frame_hint then
-        local rec = s.pending_requests.by_frame[frame_hint]
-        if rec then return rec end
+        return s.pending_requests.by_frame[frame_hint]
+    end
+    if seq then
+        return s.pending_requests.by_seq[seq]
     end
     return nil
 end
