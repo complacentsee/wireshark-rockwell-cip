@@ -2566,18 +2566,19 @@
     <field name="rockwell_cip.handshake.challenge" showname="Phase 1 Challenge […]: ea d4 d7 e0 ea 7f 23 6c e9 a4 90 14 be 5d a3 be 42 f7 3c be 0f 99 da 89 c5 f9 49 96 3f b1 bb bc 5e 0d 42 e5 2e 4a 84 76 70 d8 d6 7e f9 2d 8a b0 f8 f3 19 87 95 fc cc a2 ee 6a d3 16 d2 01 66 63 83 26 9a c6 7d 9b 49 5" size="128" pos="110" show="ea:d4:d7:e0:ea:7f:23:6c:e9:a4:90:14:be:5d:a3:be:42:f7:3c:be:0f:99:da:89:c5:f9:49:96:3f:b1:bb:bc:5e:0d:42:e5:2e:4a:84:76:70:d8:d6:7e:f9:2d:8a:b0:f8:f3:19:87:95:fc:cc:a2:ee:6a:d3:16:d2:01:66:63:83:26:9a:c6:7d:9b:49:56:da:f9:91:fc:3a:8a:4f:88:5a:be:6c:6c:46:b5:6e:3b:d8:32:3b:44:7d:23:bf:9d:78:85:f4:1d:4e:33:be:e2:13:ca:58:1a:68:c6:23:44:90:b5:af:58:01:84:6f:35:0c:8a:b7:39:f2:a0:1d:56" value="ead4d7e0ea7f236ce9a49014be5da3be42f73cbe0f99da89c5f949963fb1bbbc5e0d42e52e4a847670d8d67ef92d8ab0f8f3198795fccca2ee6ad316d201666383269ac67d9b4956daf991fc3a8a4f885abe6c6c46b56e3bd8323b447d23bf9d7885f41d4e33bee213ca581a68c6234490b5af5801846f350c8ab739f2a01d56"/>
     <field name="rockwell_cip.handshake.challenge_lo" showname="challenge[0:64] (candidate HMAC key — unverified) […]: ea d4 d7 e0 ea 7f 23 6c e9 a4 90 14 be 5d a3 be 42 f7 3c be 0f 99 da 89 c5 f9 49 96 3f b1 bb bc 5e 0d 42 e5 2e 4a 84 76 70 d8 d6 7e f9 2d 8a b0 f8 f3 19 87 95 fc cc a2 ee 6a d3 16 " size="64" pos="110" show="ea:d4:d7:e0:ea:7f:23:6c:e9:a4:90:14:be:5d:a3:be:42:f7:3c:be:0f:99:da:89:c5:f9:49:96:3f:b1:bb:bc:5e:0d:42:e5:2e:4a:84:76:70:d8:d6:7e:f9:2d:8a:b0:f8:f3:19:87:95:fc:cc:a2:ee:6a:d3:16:d2:01:66:63" value="ead4d7e0ea7f236ce9a49014be5da3be42f73cbe0f99da89c5f949963fb1bbbc5e0d42e52e4a847670d8d67ef92d8ab0f8f3198795fccca2ee6ad316d2016663"/>
     <field name="rockwell_cip.handshake.challenge_hi" showname="challenge[64:128]: 83 26 9a c6 7d 9b 49 56 da f9 91 fc 3a 8a 4f 88 5a be 6c 6c 46 b5 6e 3b d8 32 3b 44 7d 23 bf 9d 78 85 f4 1d 4e 33 be e2 13 ca 58 1a 68 c6 23 44 90 b5 af 58 01 84 6f 35 0c 8a b7 39 f2 a0 1d 56" size="64" pos="174" show="83:26:9a:c6:7d:9b:49:56:da:f9:91:fc:3a:8a:4f:88:5a:be:6c:6c:46:b5:6e:3b:d8:32:3b:44:7d:23:bf:9d:78:85:f4:1d:4e:33:be:e2:13:ca:58:1a:68:c6:23:44:90:b5:af:58:01:84:6f:35:0c:8a:b7:39:f2:a0:1d:56" value="83269ac67d9b4956daf991fc3a8a4f885abe6c6c46b56e3bd8323b447d23bf9d7885f41d4e33bee213ca581a68c6234490b5af5801846f350c8ab739f2a01d56"/>
+    <field name="rockwell_cip.handshake.kdf_status" showname="Path-A KDF: (no client RSA key set)" size="0" pos="104" show="(no client RSA key set)"/>
+    <field name="_ws.expert" showname="Expert Info (Note/Security): Path-A KDF: no client RSA private key preference set — HMAC validation will fall back to the rockwell_cip.hmac_key preference if provided" size="0" pos="104">
+      <field name="rockwell_cip.handshake.no_key" showname="Path-A KDF: no client RSA private key preference set — HMAC validation will fall back to the rockwell_cip.hmac_key preference if provided" size="0" pos="0" show="" value=""/>
+      <field name="_ws.expert.message" showname="Message: Path-A KDF: no client RSA private key preference set — HMAC validation will fall back to the rockwell_cip.hmac_key preference if provided" hide="yes" size="0" pos="0" show="Path-A KDF: no client RSA private key preference set — HMAC validation will fall back to the rockwell_cip.hmac_key preference if provided"/>
+      <field name="_ws.expert.severity" showname="Severity level: Note" size="0" pos="0" show="4194304"/>
+      <field name="_ws.expert.group" showname="Group: Security" size="0" pos="0" show="167772160"/>
+    </field>
     <field name="rockwell_cip.handshake.phase" showname="Handshake Phase: 1 reply (challenge)" size="0" pos="104" show="1 reply (challenge)"/>
     <field name="_ws.expert" showname="Expert Info (Note/Security): Path-A Phase 1: PLC issued challenge" size="0" pos="104">
       <field name="rockwell_cip.handshake.phase1" showname="Path-A Phase 1: PLC issued challenge" size="0" pos="0" show="" value=""/>
       <field name="_ws.expert.message" showname="Message: Path-A Phase 1: PLC issued challenge" hide="yes" size="0" pos="0" show="Path-A Phase 1: PLC issued challenge"/>
       <field name="_ws.expert.severity" showname="Severity level: Note" size="0" pos="0" show="4194304"/>
       <field name="_ws.expert.group" showname="Group: Security" size="0" pos="0" show="167772160"/>
-    </field>
-    <field name="_ws.expert" showname="Expert Info (Note/Protocol): Auth KDF / response algorithm not yet reverse-engineered" size="0" pos="104">
-      <field name="rockwell_cip.handshake.alg_unknown" showname="Auth KDF / response algorithm not yet reverse-engineered" size="0" pos="0" show="" value=""/>
-      <field name="_ws.expert.message" showname="Message: Auth KDF / response algorithm not yet reverse-engineered" hide="yes" size="0" pos="0" show="Auth KDF / response algorithm not yet reverse-engineered"/>
-      <field name="_ws.expert.severity" showname="Severity level: Note" size="0" pos="0" show="4194304"/>
-      <field name="_ws.expert.group" showname="Group: Protocol" size="0" pos="0" show="150994944"/>
     </field>
   </proto>
 </packet>
@@ -2957,12 +2958,6 @@
       <field name="_ws.expert.message" showname="Message: Path-A Phase 2: client sent response" hide="yes" size="0" pos="0" show="Path-A Phase 2: client sent response"/>
       <field name="_ws.expert.severity" showname="Severity level: Note" size="0" pos="0" show="4194304"/>
       <field name="_ws.expert.group" showname="Group: Security" size="0" pos="0" show="167772160"/>
-    </field>
-    <field name="_ws.expert" showname="Expert Info (Note/Protocol): Auth KDF / response algorithm not yet reverse-engineered" size="0" pos="100">
-      <field name="rockwell_cip.handshake.alg_unknown" showname="Auth KDF / response algorithm not yet reverse-engineered" size="0" pos="0" show="" value=""/>
-      <field name="_ws.expert.message" showname="Message: Auth KDF / response algorithm not yet reverse-engineered" hide="yes" size="0" pos="0" show="Auth KDF / response algorithm not yet reverse-engineered"/>
-      <field name="_ws.expert.severity" showname="Severity level: Note" size="0" pos="0" show="4194304"/>
-      <field name="_ws.expert.group" showname="Group: Protocol" size="0" pos="0" show="150994944"/>
     </field>
   </proto>
 </packet>

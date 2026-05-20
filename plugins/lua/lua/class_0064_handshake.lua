@@ -15,29 +15,47 @@
 --   Phase 2 reply:    PLC → client, service 0xCC. Tiny success ack
 --                     (license_status u16 at the tail).
 --
--- IMPORTANT — algorithm note:
---   An earlier draft of this dissector claimed the Phase 2 response was
---   SHA-1^20(challenge[0:64]) and that the resulting key was used to
---   HMAC-SHA1-sign every 0x36/0xBA frame. That hypothesis fails against
---   captured bytes (SHA-1^n / HMAC permutations were searched and none
---   match). The actual KDF / signing function is not yet reverse-
---   engineered.
+-- Algorithm (Path-A KDF, recovered from firmware FUN_f4190f00 — see
+-- ../../../logix_fw/cip_upload/hmac_connect.py:1-49,106-122 for the
+-- authoritative reference):
 --
---   So this module:
---     * Annotates Phase 1 / Phase 2 messages, breaks out the challenge
---       and response byte ranges as named ProtoFields.
---     * Marks each frame with the role it plays in the handshake.
---     * Caches challenge[0:64] AND challenge[64:128] on the session for
---       service_36_signed.lua to use as candidate HMAC keys; signed
---       only treats them as candidates when the user has NOT supplied
---       a preference key.
---     * Does NOT claim "OK" / "FAIL" verdicts because we can't compute
---       the expected value yet.
+--   1. PLC issues 128B `challenge_nonce` — that's the CIPHERTEXT of
+--      RSA-encrypting a 128B plaintext blob with the *client*'s public
+--      key. Reading the nonce in the clear tells you nothing.
+--   2. Client RSA-decrypts with its private key, reading and writing
+--      with LITTLE-ENDIAN byte order (Rockwell-specific; PKCS#1 uses
+--      big-endian — easy to get wrong).
+--   3. The HMAC session key is `plaintext[0:64]`. The Phase 2 response
+--      that unlocks signing is `SHA-1^20(plaintext[0:64])` — twenty
+--      sequential SHA-1 applications starting from the 64-byte key.
+--   4. On Phase 2 success the firmware sets ctx[+0x2FA] = 1, caches K
+--      as the session HMAC key, and expects seq starting at 1.
 --
---   When the algorithm is recovered (likely from a packet trace where
---   the secret can be observed, or from controller firmware), update
---   the dissect() body to compute the expected response and HMAC and
---   wire the corresponding expert info back up.
+-- An earlier draft of this module guessed `SHA-1^20(challenge[0:64])`
+-- (i.e. of the ciphertext). That fails — the input has to be the
+-- decrypted plaintext, which requires the client's RSA private key.
+--
+-- Two paths to a derived key:
+--   * If the user provides the client RSA private key (the
+--     `rockwell_cip.client_rsa_key_file` preference, PEM or DER), we
+--     RSA-decrypt the Phase 1 challenge here and stash plaintext[0:64]
+--     as the session HMAC key. service_36_signed picks it up from
+--     `session.effective_key` with no further wiring.
+--   * If the user already derived the key out-of-band (`tools/derive_
+--     hmac_key.py` or any other path), they paste it as 128 hex chars
+--     into the `rockwell_cip.hmac_key` preference; same downstream.
+--
+-- This module also:
+--   * Annotates Phase 1 / Phase 2 messages with byte ranges for the
+--     challenge and response as named ProtoFields.
+--   * Caches challenge[0:64] AND challenge[64:128] of the CIPHERTEXT
+--     as candidate keys for service_36_signed.lua's fallback path —
+--     those candidates rarely match, but they cost ~nothing to try
+--     and are useful when the user supplies neither preference but
+--     wants a "would-have-worked-if-key-were-trivial" signal.
+--   * Does NOT claim "OK" / "FAIL" verdicts on its own — verdicts come
+--     from service_36_signed/service_3a_upload, which key off the
+--     resolved session key (preference > derived > candidate).
 
 local M = {}
 
@@ -59,6 +77,10 @@ function M.register(proto, valstr, ctx)
         "Phase 2 Response", base.SPACE)
     f.license_status  = ProtoField.uint16("rockwell_cip.handshake.license_status",
         "License Status", base.HEX)
+    f.derived_hmac    = ProtoField.bytes("rockwell_cip.handshake.derived_hmac_key",
+        "Derived HMAC key (plaintext[0:64])", base.SPACE)
+    f.kdf_status      = ProtoField.string("rockwell_cip.handshake.kdf_status",
+        "Path-A KDF")
 
     for _, fld in pairs(f) do ctx.add_field(fld) end
 
@@ -70,13 +92,100 @@ function M.register(proto, valstr, ctx)
         "rockwell_cip.handshake.phase2",
         "Path-A Phase 2: client sent response",
         expert.group.SECURITY, expert.severity.NOTE)
-    local expert_alg_unknown = ProtoExpert.new(
-        "rockwell_cip.handshake.alg_unknown",
-        "Auth KDF / response algorithm not yet reverse-engineered",
-        expert.group.PROTOCOL, expert.severity.NOTE)
+    local expert_kdf_ok = ProtoExpert.new(
+        "rockwell_cip.handshake.kdf_ok",
+        "Path-A KDF: derived HMAC session key from RSA private key",
+        expert.group.SECURITY, expert.severity.NOTE)
+    local expert_kdf_fail = ProtoExpert.new(
+        "rockwell_cip.handshake.kdf_fail",
+        "Path-A KDF: RSA decrypt failed (wrong key for this stream?)",
+        expert.group.SECURITY, expert.severity.WARN)
+    local expert_no_key = ProtoExpert.new(
+        "rockwell_cip.handshake.no_key",
+        "Path-A KDF: no client RSA private key preference set — "
+        .. "HMAC validation will fall back to the rockwell_cip.hmac_key "
+        .. "preference if provided",
+        expert.group.SECURITY, expert.severity.NOTE)
     ctx.add_expert(expert_phase1)
     ctx.add_expert(expert_phase2)
-    ctx.add_expert(expert_alg_unknown)
+    ctx.add_expert(expert_kdf_ok)
+    ctx.add_expert(expert_kdf_fail)
+    ctx.add_expert(expert_no_key)
+
+    -- Preference: client RSA private key (PEM or DER). When set, the
+    -- handshake dissector RSA-decrypts each Phase 1 challenge it sees
+    -- on this stream, then stashes plaintext[0:64] as the session
+    -- HMAC key. service_36_signed.lua / service_3a_upload.lua pick
+    -- that up via session.effective_key without further wiring.
+    --
+    -- See class_0064_handshake.lua's header comment for the protocol
+    -- specifics — Rockwell's challenge nonce is LITTLE-ENDIAN on the
+    -- wire as an RSA integer, which is opposite of textbook PKCS#1.
+    proto.prefs.client_rsa_key_file = Pref.string(
+        "Path-A: Client RSA private key file (PEM or DER)",
+        "",
+        "Path to the client's RSA private key. When set, every Phase "
+        .. "1 reply on this conversation is RSA-decrypted to recover "
+        .. "the 64-byte HMAC session key (= plaintext[0:64]). PKCS#1 "
+        .. "and unencrypted PKCS#8 PEMs are both accepted; the key "
+        .. "must be the SAME key the client used to mint the "
+        .. "certificate sent in Phase 1, otherwise the decrypt "
+        .. "produces garbage. Leave empty to skip the KDF and rely on "
+        .. "the rockwell_cip.hmac_key preference (if set) for HMAC "
+        .. "verdicts.")
+
+    -- Parsed-key cache. Re-parses when the preference string changes;
+    -- the parsed key is reused across all streams on the same Lua run.
+    -- A bad path / bad PEM is cached as `false` so we don't retry on
+    -- every dissect.
+    local rsa, pem, bigint
+    local cached_key_path = nil
+    local cached_key      = nil
+
+    local function load_rsa_key()
+        local path = proto.prefs.client_rsa_key_file
+        if path == cached_key_path then return cached_key end
+        cached_key_path = path
+        if not path or path == "" then
+            cached_key = nil
+            return nil
+        end
+        -- Lazy-load the heavy modules so dissectors that don't use
+        -- the key preference don't pay the load cost.
+        rsa    = rsa    or require "rsa"
+        pem    = pem    or require "pem"
+        bigint = bigint or require "bigint"
+        local ok, parsed = pcall(pem.parse_private_key, path)
+        if not ok then
+            io.stderr:write(string.format(
+                "[rockwell_cip] failed to load RSA key from %s: %s\n",
+                path, parsed))
+            cached_key = false
+            return nil
+        end
+        cached_key = parsed
+        return parsed
+    end
+
+    -- Decrypt + cache the HMAC key for this conversation. Idempotent:
+    -- subsequent Phase 1 frames on the same conv hit the cached key.
+    -- Returns a status string ("derived", "skipped", "failed").
+    local function derive_hmac_key(sess, challenge_bytes, subtree)
+        if sess.hmac_key then return "already-set" end
+        local key = load_rsa_key()
+        if not key then return "no-key" end
+
+        local ok, result = pcall(rsa.decrypt, challenge_bytes, key,
+                                 { byte_order = "le", width = 128 })
+        if not ok then
+            io.stderr:write(string.format(
+                "[rockwell_cip] RSA decrypt failed: %s\n", result))
+            return "failed"
+        end
+        if #result < 64 then return "failed" end
+        sess.hmac_key = result:sub(1, 64)
+        return "derived"
+    end
 
     local field_cip_service = Field.new("cip.service")
     local field_cip_class   = Field.new("cip.class")
@@ -111,6 +220,7 @@ function M.register(proto, valstr, ctx)
             local body_len = cip_tvb(4, 2):le_uint()
             subtree:add_le(f.body_len, cip_tvb(4, 2))
             if cip_tvb:len() < 6 + body_len then return end
+            local kdf_status = "skipped (body_len != 128)"
             if body_len == 128 then
                 local challenge_range = cip_tvb(6, 128)
                 subtree:add(f.challenge, challenge_range)
@@ -120,11 +230,36 @@ function M.register(proto, valstr, ctx)
                 sess.challenge        = raw
                 sess.candidate_key_lo = raw:sub(1, 64)
                 sess.candidate_key_hi = raw:sub(65, 128)
+
+                -- Attempt the Path-A KDF: RSA-decrypt the challenge with
+                -- the configured client private key and stash the
+                -- derived session HMAC key (= plaintext[0:64]). No-ops
+                -- silently when the preference is unset or the key
+                -- already matched a prior frame on this conversation.
+                local result = derive_hmac_key(sess, raw, subtree)
+                if result == "derived" then
+                    subtree:add(f.derived_hmac, sess.hmac_key):set_generated()
+                    subtree:add(f.kdf_status, "derived"):set_generated()
+                    subtree:add_proto_expert_info(expert_kdf_ok)
+                    kdf_status = "derived"
+                elseif result == "already-set" then
+                    subtree:add(f.kdf_status, "already-derived"):set_generated()
+                    kdf_status = "already-derived"
+                elseif result == "no-key" then
+                    subtree:add(f.kdf_status,
+                        "(no client RSA key set)"):set_generated()
+                    subtree:add_proto_expert_info(expert_no_key)
+                    kdf_status = "no-key"
+                elseif result == "failed" then
+                    subtree:add(f.kdf_status, "FAILED"):set_generated()
+                    subtree:add_proto_expert_info(expert_kdf_fail)
+                    kdf_status = "failed"
+                end
             end
             subtree:add(f.phase, "1 reply (challenge)"):set_generated()
             subtree:add_proto_expert_info(expert_phase1)
-            subtree:add_proto_expert_info(expert_alg_unknown)
-            pinfo.cols.info:append(" [Path-A Phase 1 reply]")
+            pinfo.cols.info:append(string.format(
+                " [Path-A Phase 1 reply, KDF: %s]", kdf_status))
         elseif svc == 0x4C then
             -- Request layout: svc(1) path_size(1) path(path_size*2) body_len(u16 LE) body
             if cip_tvb:len() < 2 then return end
@@ -139,7 +274,6 @@ function M.register(proto, valstr, ctx)
             end
             subtree:add(f.phase, "2 request (response)"):set_generated()
             subtree:add_proto_expert_info(expert_phase2)
-            subtree:add_proto_expert_info(expert_alg_unknown)
             pinfo.cols.info:append(" [Path-A Phase 2 request]")
         elseif svc == 0xCC then
             subtree:add(f.phase, "2 reply (server ack)"):set_generated()

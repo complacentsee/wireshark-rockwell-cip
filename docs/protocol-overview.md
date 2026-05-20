@@ -111,35 +111,50 @@ the bit number (0..63 for LINT, 0..31 for DINT, etc.).
 ## Handshake
 
 The 0x36 wrapper's HMAC key is established during a two-phase handshake
-on class 0x0064 (Logix Controller). The wire format is known; the KDF
-(key-derivation function) is not yet reverse-engineered:
+on class 0x0064 (Logix Controller):
 
-1. **Phase 1**: client sends service `0x4B` with a small auth body. PLC
-   replies with service `0xCB`; reply CIP body is a u16-LE length prefix
-   (`0x0080` = 128) followed by 128 bytes of challenge / nonce material.
-2. **Phase 2**: client sends service `0x4C`; CIP body is a u16-LE length
-   prefix (`0x0014` = 20) followed by 20 bytes of response material. PLC
-   replies with service `0xCC` carrying a small `license_status` ack.
+1. **Phase 1**: client sends service `0x4B` with a small auth body
+   (containing the client's certificate). PLC replies with service
+   `0xCB`; reply CIP body is a u16-LE length prefix (`0x0080` = 128)
+   followed by 128 bytes of `challenge_nonce`. The nonce is the
+   CIPHERTEXT of an RSA encryption of a 128-byte plaintext blob with
+   the *client's* public key. Reading the nonce in the clear tells you
+   nothing.
+2. **Phase 2**: client RSA-decrypts the nonce with its private key,
+   reading and writing **little-endian** (Rockwell-specific quirk;
+   PKCS#1 uses big-endian — easy to get wrong). The HMAC session key
+   is `plaintext[0:64]`. The Phase 2 response that unlocks signing is
+   `SHA-1^20(plaintext[0:64])` — twenty sequential SHA-1 applications
+   starting from the 64-byte key. Client sends service `0x4C`; CIP
+   body is a u16-LE length prefix (`0x0014` = 20) followed by the
+   20-byte response. PLC replies with service `0xCC` carrying a small
+   `license_status` ack and from then on accepts service-0x36 signed
+   requests starting at seq=1.
 
-**What's known**: the byte layouts above, captured against
-`upload.pcapng` (Studio v36 ↔ ControlLogix).
+The firmware accepts a second Phase 2 variant (`SHA-1(plaintext[0:20])`)
+that grants privileged access without enabling signing. The companion
+Python module documents both — see `logix_fw/cip_upload/hmac_connect.py`
+for the authoritative implementation, including the firmware function
+mapping (`FUN_f4190f00`).
 
-**What's open**:
-- The function that maps the 128-byte challenge to the 64-byte
-  HMAC-SHA1 key. SHA-1^N(challenge[0:64]) was an earlier guess; an
-  exhaustive search over `N=1..40` and over `{challenge[0:64],
-  challenge[64:128], full 128, prefixes 20/32}` produced no match
-  against the observed 20-byte Phase 2 response.
-- Whether the HMAC key is `challenge[0:64]`, `challenge[64:128]`, or a
-  derived value. The Lua dissector caches both halves as candidates and
-  tries each against the actual HMAC trailer of the first 0x36 frame on
-  the same stream; in `upload.pcapng` neither matches, so the key is
-  some transformation we haven't recovered.
+### Validating HMACs in the dissector
 
-Until the KDF is recovered, validate HMACs by supplying a 64-byte key
-out-of-band via the `rockwell_cip.hmac_key` preference (128 hex
-characters). The dissector then validates every 0x36 / 0xB6 trailer on
-every stream and reports OK/MISMATCH per frame.
+Two preferences feed the HMAC validator; either is sufficient:
+
+- `rockwell_cip.client_rsa_key_file` — path to the client's RSA
+  private key in PEM or DER (PKCS#1) format. When set, the handshake
+  module RSA-decrypts every Phase 1 challenge it sees on that stream
+  and stashes `plaintext[0:64]` as the session key. No further input
+  needed.
+- `rockwell_cip.hmac_key` — 128 hex chars of the derived 64-byte
+  session key. Use this when you've derived the key out-of-band (e.g.
+  via `tools/derive_hmac_key.py`) or have a key from a session whose
+  Phase 1 wasn't captured.
+
+The dissector validates every 0x36/0xB6 (and 0x3A/0xBA) trailer using
+the resolved key and reports OK/MISMATCH per frame. With neither
+preference set, the trailer bytes are still decoded but no verdict is
+emitted.
 
 ## Where this isn't enough
 
