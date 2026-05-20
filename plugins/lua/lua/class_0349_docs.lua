@@ -160,9 +160,26 @@ function M.register(proto, valstr, ctx)
         "Target Instance", base.DEC)
     f.records_count = ProtoField.uint32("rockwell_cip.docs.records_count",
         "Record Count", base.DEC)
-    f.records_skipped = ProtoField.uint32(
-        "rockwell_cip.docs.records_skipped",
-        "Records Skipped (unparsed layout)", base.DEC)
+    -- Non-text records: the same class-marker / 0x007F-marker / zero-pad
+    -- header as a text record, but count != 1 OR strlen == 0. These
+    -- carry attribute-value tails (CIP type code + value, e.g. 0x00c2
+    -- SINT) or empty placeholders, NOT text descriptions. The Python
+    -- parser's data.find()+_try_record loop walks past them silently;
+    -- here we expose the count separately so analysts can see the shape
+    -- of the stream without confusing them for parse failures.
+    --
+    -- The walker only counts a position as a non-text record when the
+    -- full header skeleton (marker at +14, expected zero pads at +4..+13
+    -- and +20..+33) is intact — that's what distinguishes a real
+    -- non-text record start from a coincidental doc-class u16 sitting in
+    -- the middle of some other structure's body (e.g. v36's compound
+    -- MessageLog-style records, whose payload embeds raw cm bytes as
+    -- field data — see frame 33703 in upload.pcapng for the canonical
+    -- example). False positives there used to inflate the old
+    -- records_skipped counter; the field is intentionally removed.
+    f.records_attr  = ProtoField.uint32(
+        "rockwell_cip.docs.records_attr",
+        "Non-Text Records (attribute / empty)", base.DEC)
     -- Reassembly fields. continuation marks a frame whose page_data is
     -- entirely the tail of an in-progress record; chunk_size is that
     -- frame's contribution in bytes; complete_in points at the frame
@@ -194,16 +211,11 @@ function M.register(proto, valstr, ctx)
         "rockwell_cip.docs.compressed_record",
         "Record body is zlib-compressed (marker 0x8280)",
         expert.group.PROTOCOL, expert.severity.NOTE)
-    local expert_unsupported = ProtoExpert.new(
-        "rockwell_cip.docs.unsupported_layout",
-        "Record layout not yet decoded (OPSTR / SCOPED variant)",
-        expert.group.PROTOCOL, expert.severity.NOTE)
     local expert_stream_residue = ProtoExpert.new(
         "rockwell_cip.docs.stream_residue",
         "Stream closed with residual partial-record bytes in the accumulator",
         expert.group.MALFORMED, expert.severity.WARN)
     ctx.add_expert(expert_compressed)
-    ctx.add_expert(expert_unsupported)
     ctx.add_expert(expert_stream_residue)
 
     -- Per-class allow-list of candidate layouts. Mirrors LAYOUTS in
@@ -572,6 +584,29 @@ function M.register(proto, valstr, ctx)
         return nil
     end
 
+    -- Distinguish a "non-text record" from a true parse failure.
+    --
+    -- When try_record returns nil for a position whose u16 IS a known
+    -- doc class, the bytes may still represent a perfectly well-formed
+    -- record header — just one whose count != 1 (an attribute-value
+    -- record carrying a CIP type code + value tail) or whose count == 1
+    -- but strlen == 0 (an empty placeholder). The Python parser at
+    -- extract_logix_data.py:1521 walks past these silently via its
+    -- data.find()+_try_record loop; we want to surface them as
+    -- "non-text records" rather than mislabel them as parse failures.
+    --
+    -- Heuristic: same 34-byte LAYOUT_38-shaped header — class_marker
+    -- at +0, 10 zeros at +4..+13, MARKER_7F at +14, 14 zeros at
+    -- +20..+33. Returns true if the bytes match, false otherwise.
+    -- "short" propagates when the header is partial.
+    local function is_non_text_record_header(s, pos, slen)
+        if pos + 36 > slen then return "short" end
+        if s_u16_le(s, pos + 14) ~= MARKER_7F then return false end
+        if not s_bytes_all_zero(s, pos + 4, 10) then return false end
+        if not s_bytes_all_zero(s, pos + 20, 14) then return false end
+        return true
+    end
+
     -- Decode the record's text body straight from the accumulator. The
     -- whole record is in the accumulator by definition (we only mark a
     -- record "complete" once we've seen its last byte). Returns
@@ -631,28 +666,35 @@ function M.register(proto, valstr, ctx)
         --     fully in yet. Stop walking; the next chunk's append will
         --     extend the accumulator and we'll resume from `pos`.
         --   * try_record returns a number → record validated; advance.
-        --   * try_record returns nil → garbage at pos. If pos's u16
-        --     happens to be a known DOC_CLASS, count it as a skipped
-        --     record (attribute-value records with count != 1 land
-        --     here; the Python parser also ignores them) — attributed
-        --     to whichever chunk's byte range covers `pos`. Slide by 1
-        --     to resync.
+        --   * try_record returns nil → no text record validates at pos.
+        --     If pos's u16 IS a known DOC_CLASS AND
+        --     is_non_text_record_header is true (header skeleton
+        --     intact), bump records_attr — that's the Python parser's
+        --     "count != 1 / strlen == 0 → ignore" case.
+        --     Otherwise silently slide pos by 1. We intentionally do
+        --     NOT count cm-matching bytes that lack the header
+        --     skeleton, because v36's compound records (e.g. the
+        --     MessageLog-style records around frame 33700 in
+        --     upload.pcapng) embed raw class-id u16s as field data,
+        --     and a byte-walker treats every such byte as a candidate
+        --     record start. Counting those would surface hundreds of
+        --     false-positive "skip" warnings per unknown record body.
         --
         -- Walks can span chunk boundaries: walk_pos at frame entry may
         -- point into a prior chunk's tail (left over from "short" the
         -- last time around). Stats get attributed per-chunk so a frame
         -- that's actually a true continuation (no records start here,
-        -- no skips happen here) is classified as such even when a
-        -- skip-heavy later walk passes through bytes in earlier chunks.
+        -- no attr records counted here) is classified as such even when
+        -- a later walk passes through bytes in earlier chunks.
         local per_chunk_records = {}   -- chunk_idx -> [completed records]
-        local per_chunk_skipped = {}   -- chunk_idx -> skip count
+        local per_chunk_attr    = {}   -- chunk_idx -> non-text record count
         local function add_record(idx, c)
             per_chunk_records[idx] = per_chunk_records[idx] or {}
             local list = per_chunk_records[idx]
             list[#list + 1] = c
         end
-        local function bump_skip(idx)
-            per_chunk_skipped[idx] = (per_chunk_skipped[idx] or 0) + 1
+        local function bump_attr(idx)
+            per_chunk_attr[idx] = (per_chunk_attr[idx] or 0) + 1
         end
 
         local pos = stream.walk_pos
@@ -707,21 +749,29 @@ function M.register(proto, valstr, ctx)
                 if pos + 2 <= slen then
                     local cm = s_u16_le(accum, pos)
                     if DOC_CLASSES[cm] then
-                        local target_idx =
-                            chunk_idx_for_pos(stream.chunks, pos)
-                            or chunk_idx
-                        bump_skip(target_idx)
-                        -- Retroactively bump prior chunks' counters
-                        -- too (current chunk's result is built below).
-                        if target_idx ~= chunk_idx then
-                            local prior = stream.frame_results[
-                                              stream.chunks[target_idx].frame]
-                            if prior then
-                                prior.records_skipped =
-                                    (prior.records_skipped or 0) + 1
-                                prior.continuation = false
+                        local kind = is_non_text_record_header(
+                            accum, pos, slen)
+                        if kind == "short" then break end
+                        if kind == true then
+                            local target_idx =
+                                chunk_idx_for_pos(stream.chunks, pos)
+                                or chunk_idx
+                            bump_attr(target_idx)
+                            if target_idx ~= chunk_idx then
+                                -- Retroactively bump prior chunks'
+                                -- counters too (current chunk's
+                                -- result is built below).
+                                local prior = stream.frame_results[
+                                                  stream.chunks[target_idx].frame]
+                                if prior then
+                                    prior.records_attr =
+                                        (prior.records_attr or 0) + 1
+                                    prior.continuation = false
+                                end
                             end
                         end
+                        -- kind == false: cm matched but no header
+                        -- skeleton — false positive, silent slide.
                     end
                 end
                 pos = pos + 1
@@ -741,12 +791,12 @@ function M.register(proto, valstr, ctx)
         -- payload is entirely the tail of an in-progress record that
         -- started earlier.
         local local_records = per_chunk_records[chunk_idx] or {}
-        local local_skipped = per_chunk_skipped[chunk_idx] or 0
+        local local_attr    = per_chunk_attr[chunk_idx]    or 0
         local result = {
             chunk_idx       = chunk_idx,
             records         = local_records,
-            records_skipped = local_skipped,
-            continuation    = (#local_records == 0 and local_skipped == 0),
+            records_attr    = local_attr,
+            continuation    = (#local_records == 0 and local_attr == 0),
             chunk_size      = #page_data,
             complete_in     = nil,    -- filled retroactively by future ingests
             tail_after      = has_tail,
@@ -1040,7 +1090,7 @@ function M.register(proto, valstr, ctx)
             else
                 cached = {
                     records         = {},
-                    records_skipped = 0,
+                    records_attr    = 0,
                     continuation    = false,
                     chunk_size      = 0,
                     complete_in     = nil,
@@ -1083,11 +1133,8 @@ function M.register(proto, valstr, ctx)
                               cached.chunk_size)
             end
             subtree:add(f.records_count, #cached.records):set_generated()
-            subtree:add(f.records_skipped,
-                        cached.records_skipped):set_generated()
-            if cached.records_skipped > 0 then
-                subtree:add_proto_expert_info(expert_unsupported)
-            end
+            subtree:add(f.records_attr,
+                        cached.records_attr or 0):set_generated()
             if #cached.records > 0 then
                 pinfo.cols.info:append(
                     string.format(" [%d docs records]", #cached.records))
