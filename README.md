@@ -95,6 +95,24 @@ The `class_attrs` module also adds attribute-name hints for class 0x6C
 (Template) and 0x8D (MessageParameters) responses; those show up as
 generated sub-trees under the stock CIP tree.
 
+## Performance
+
+The Path-A KDF (`Edit → Preferences → Protocols → ROCKWELL_CIP →
+Path-A: Client RSA private key file`) costs one 1024-bit RSA decrypt
+per Phase-1 challenge in the capture. The pure-Lua bigint
+implementation runs around 2–3s per modexp on a developer laptop, so
+a capture with ~17 distinct CIP connections takes ~40s to fully
+dissect cold.
+
+Derived keys are cached on disk at
+`~/.cache/rockwell_cip/hmac_modexp_cache.bin`, partitioned by
+`sha1(key_file_bytes)`. Subsequent opens of the same capture skip the
+modexp entirely — typical warm reopen of the 40s capture above drops
+to under 10s. The cache is append-only, safe under concurrent
+dissect runs, and entirely self-managing: delete the file to rebuild
+it. No preference toggles or expert info — cached and freshly-derived
+keys are indistinguishable to the user.
+
 ## Pcaps & test fixtures
 
 This repository ships **no pcap files**. Live capture material — even

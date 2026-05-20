@@ -138,24 +138,30 @@ function M.register(proto, valstr, ctx)
     -- the parsed key is reused across all streams on the same Lua run.
     -- A bad path / bad PEM is cached as `false` so we don't retry on
     -- every dissect.
-    local rsa, pem, bigint, sha1
+    local rsa, pem, bigint, sha1, modexp_cache
     local cached_key_path = nil
     local cached_key      = nil
+    -- SHA-1 of the raw key-file bytes, used as the partition key for
+    -- the on-disk modexp cache. Recomputed whenever the preference
+    -- path changes; nil if the file couldn't be read.
+    local cached_key_hash = nil
 
     local function load_rsa_key()
         local path = proto.prefs.client_rsa_key_file
         if path == cached_key_path then return cached_key end
         cached_key_path = path
+        cached_key_hash = nil
         if not path or path == "" then
             cached_key = nil
             return nil
         end
         -- Lazy-load the heavy modules so dissectors that don't use
         -- the key preference don't pay the load cost.
-        rsa    = rsa    or require "rsa"
-        pem    = pem    or require "pem"
-        bigint = bigint or require "bigint"
-        sha1   = sha1   or require "sha1"
+        rsa          = rsa          or require "rsa"
+        pem          = pem          or require "pem"
+        bigint       = bigint       or require "bigint"
+        sha1         = sha1         or require "sha1"
+        modexp_cache = modexp_cache or require "modexp_cache"
         local ok, parsed = pcall(pem.parse_private_key, path)
         if not ok then
             io.stderr:write(string.format(
@@ -164,7 +170,8 @@ function M.register(proto, valstr, ctx)
             cached_key = false
             return nil
         end
-        cached_key = parsed
+        cached_key      = parsed
+        cached_key_hash = modexp_cache.hash_key_file(path)
         return parsed
     end
 
@@ -177,6 +184,14 @@ function M.register(proto, valstr, ctx)
     -- all and cache the connid→key mapping on first match. Pass-2 of
     -- `tshark -2` (and any frame re-dissect) hits the
     -- keys_by_challenge cache so we don't repeat the ~3s modexp.
+    --
+    -- Across runs: util/modexp_cache.lua persists derived keys to
+    -- ~/.cache/rockwell_cip/hmac_modexp_cache.bin, partitioned by
+    -- sha1(key_file_bytes). The first dissect of a capture populates
+    -- it; reopens skip the modexp entirely. Cache hits and disk-cache
+    -- writes are silent (no extra expert info) because the user-
+    -- facing behaviour is identical.
+    --
     -- Returns "derived" / "already-set" / "no-key" / "failed".
     local function derive_hmac_key(sess, challenge_bytes, subtree)
         sess.keys_by_challenge = sess.keys_by_challenge or {}
@@ -188,15 +203,28 @@ function M.register(proto, valstr, ctx)
         local key = load_rsa_key()
         if not key then return "no-key" end
 
-        local ok, result = pcall(rsa.decrypt, challenge_bytes, key,
-                                 { byte_order = "le", width = 128 })
-        if not ok then
-            io.stderr:write(string.format(
-                "[rockwell_cip] RSA decrypt failed: %s\n", result))
-            return "failed"
+        -- On-disk cache check before the expensive pure-Lua modexp.
+        local disk = cached_key_hash and modexp_cache
+            and modexp_cache.lookup(cached_key_hash, challenge_bytes)
+        local hmac_key
+        if disk then
+            hmac_key = disk
+        else
+            local ok, result = pcall(rsa.decrypt, challenge_bytes, key,
+                                     { byte_order = "le", width = 128 })
+            if not ok then
+                io.stderr:write(string.format(
+                    "[rockwell_cip] RSA decrypt failed: %s\n", result))
+                return "failed"
+            end
+            if #result < 64 then return "failed" end
+            hmac_key = result:sub(1, 64)
+            if cached_key_hash and modexp_cache then
+                modexp_cache.store(cached_key_hash, challenge_bytes,
+                                   hmac_key)
+            end
         end
-        if #result < 64 then return "failed" end
-        local hmac_key = result:sub(1, 64)
+
         sess.keys_by_challenge[challenge_bytes] = hmac_key
         sess.hmac_keys = sess.hmac_keys or {}
         table.insert(sess.hmac_keys, hmac_key)
