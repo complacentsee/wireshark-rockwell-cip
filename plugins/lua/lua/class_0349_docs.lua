@@ -45,11 +45,34 @@
 --     +36  u16  strlen
 --     +38     string data
 --
---   LAYOUT_OPSTR / LAYOUT_OPSTR_SHORT / LAYOUT_36_SCOPED /
---   LAYOUT_OPSTR_SCOPED — variants with embedded operand strings
---   and/or scope paths. These shift downstream offsets by 14–18 bytes
---   and are not yet handled by this dissector; we recognise their
---   class_marker but pass them through as "unparsed record".
+--   LAYOUT_OPSTR (class 0x006B):
+--     +0..+11    class_marker / instance / 8 zero bytes
+--     +12  u16   osl  (operand-string length, 1..64)
+--     +14..+14+osl  operand bytes (ASCII)
+--     +14+osl       remainder identical to LAYOUT_38, all positions
+--                   shifted by +osl bytes (marker @ +14+osl,
+--                   ref_id @ +18+osl, count @ +34+osl, strlen @ +36+osl,
+--                   string data @ +38+osl).
+--
+--   LAYOUT_OPSTR_SHORT (class 0x006B; compact operand variant, osl >= 3):
+--     +0..+7     class_marker / instance / 4 zero bytes
+--     +8   u16   osl
+--     +10..+10+osl  operand bytes
+--     +10+osl       LAYOUT_36 fields shifted by +osl-2 (marker @
+--                   +10+osl, ref_id @ +14+osl, count @ +30+osl,
+--                   strlen @ +32+osl, string data @ +34+osl).
+--
+--   LAYOUT_36_SCOPED / LAYOUT_OPSTR_SCOPED (class 0x006B; operand on
+--   program/AOI-scope tag): bytes +4..+25 carry an embedded CIP path
+--     +4..+13       10 zero bytes
+--     +14  u16      scope_class  (must be one of {0x0068, 0x0338, 0x0069})
+--     +16  u16      scope_inst
+--     +18  u16      target_class (must be 0x006B)
+--     +20  u16      target_inst  (the actual tag inst this comment binds to)
+--     +22..+25      4 zero bytes
+--   then either the LAYOUT_36 tail (downstream offsets shift by +18) or
+--   the LAYOUT_OPSTR tail (osl read at +26, operand at +28, marker at
+--   +28+osl, downstream offsets shift by +14+osl relative to bare OPSTR).
 --
 -- The string body can be either raw UTF-8 or zlib-compressed when the
 -- first two bytes are 0x8280 LE (the COMPRESSED_MARKER):
@@ -100,6 +123,18 @@ function M.register(proto, valstr, ctx)
         "Decompressed Size", base.DEC)
     f.layout        = ProtoField.string("rockwell_cip.docs.layout",
         "Layout")
+    f.osl           = ProtoField.uint16("rockwell_cip.docs.osl",
+        "Operand String Length", base.DEC)
+    f.operand       = ProtoField.string("rockwell_cip.docs.operand",
+        "Operand")
+    f.scope_class   = ProtoField.uint16("rockwell_cip.docs.scope_class",
+        "Scope Class", base.HEX, valstr.classes)
+    f.scope_inst    = ProtoField.uint16("rockwell_cip.docs.scope_inst",
+        "Scope Instance", base.DEC)
+    f.target_class  = ProtoField.uint16("rockwell_cip.docs.target_class",
+        "Target Class", base.HEX, valstr.classes)
+    f.target_inst   = ProtoField.uint16("rockwell_cip.docs.target_inst",
+        "Target Instance", base.DEC)
     f.records_count = ProtoField.uint32("rockwell_cip.docs.records_count",
         "Record Count", base.DEC)
     f.records_skipped = ProtoField.uint32(
@@ -127,94 +162,308 @@ function M.register(proto, valstr, ctx)
     ctx.add_expert(expert_compressed)
     ctx.add_expert(expert_unsupported)
 
-    -- Per-class allowed layouts. Mirrors LAYOUTS in extract_logix_data.py.
-    -- The dissector only tries LAYOUT_36 / LAYOUT_38 for now — the
-    -- OPSTR* variants need operand-string parsing that we haven't
-    -- ported yet; they're handled as "unparsed".
-    local LAYOUTS_SIMPLE = {
-        [0x0068] = "38",
-        [0x0069] = "38",
-        [0x006C] = "38",
-        [0x0338] = "38",
-        [0x0349] = "38",
-        -- 0x006B is best handled by the layout-detection loop below
-        -- because it can be any of 4 layouts.
+    -- Per-class allow-list of candidate layouts. Mirrors LAYOUTS in
+    -- extract_logix_data.py — order matters: more-specific layouts are
+    -- tried first so a shorter form doesn't false-match a longer
+    -- record's prefix.
+    local LAYOUTS_BY_CLASS = {
+        [0x0068] = {"LAYOUT_38"},
+        [0x0069] = {"LAYOUT_38"},
+        [0x006C] = {"LAYOUT_38"},
+        [0x0338] = {"LAYOUT_38"},
+        [0x0349] = {"LAYOUT_38"},
+        [0x006B] = {
+            "LAYOUT_OPSTR_SCOPED",
+            "LAYOUT_36_SCOPED",
+            "LAYOUT_OPSTR",
+            "LAYOUT_OPSTR_SHORT",
+            "LAYOUT_38",
+            "LAYOUT_36",
+        },
     }
+
+    -- Scope-class values that pass the SCOPED-layout validator. Mirrors
+    -- SCOPE_CLASSES in extract_logix_data.py.
+    local SCOPE_CLASSES = {
+        [0x0068] = true, [0x0338] = true, [0x0069] = true,
+    }
+
+    local MARKER_7F     = 0x007F
+    -- NB: the 0x0001 word that follows the 0x007F marker in the
+    -- LAYOUT_36 / LAYOUT_38 docstrings is *not* a constant in practice
+    -- — for class 0x0349 self-ref records +16 is actually a sequential
+    -- per-record id (0x0008, 0x0009, ...) and the 0x0001 sits at +18.
+    -- We mirror the Python parser, which validates only the 0x007F
+    -- marker + count + strlen + body-printability. Tightening the
+    -- match with a second word check would silently drop real records.
+    local TARGET_SCOPED = 0x006B
 
     local OPERAND_BIT_BASE   = valstr.operand_bit_base
     local OPERAND_BIT_STRIDE = valstr.operand_bit_stride
 
-    local DOC_CLASSES = {
-        [0x0068]=true, [0x0069]=true, [0x006B]=true, [0x006C]=true,
-        [0x0338]=true, [0x0349]=true,
-    }
+    -- Derived from LAYOUTS_BY_CLASS so adding a class to the allow-list
+    -- doesn't require a second update here.
+    local DOC_CLASSES = {}
+    for k, _ in pairs(LAYOUTS_BY_CLASS) do DOC_CLASSES[k] = true end
 
     local function u16_le(range, off)
         return range(off, 2):le_uint()
     end
 
-    local function try_record(body, pos)
-        -- Returns (consumed_bytes, table_with_fields, layout_name) or
-        -- (nil, nil, nil) if we can't parse a record here.
+    local function bytes_all_zero(body, pos, len)
+        for i = 0, len - 1 do
+            if body(pos + i, 1):uint() ~= 0 then return false end
+        end
+        return true
+    end
+
+    local function ascii_printable(body, pos, len)
+        if len <= 0 then return false end
+        for i = 0, len - 1 do
+            local c = body(pos + i, 1):uint()
+            if c < 0x20 or c > 0x7E then return false end
+        end
+        return true
+    end
+
+    -- Decode the bit_field word at +10 (or shifted equivalent) into a
+    -- concrete bit number, returning -1 if it doesn't decode as one.
+    local function decode_bit_number(bit_field)
+        if bit_field >= OPERAND_BIT_BASE
+            and (bit_field - OPERAND_BIT_BASE)
+                % OPERAND_BIT_STRIDE == 0 then
+            return (bit_field - OPERAND_BIT_BASE) // OPERAND_BIT_STRIDE
+        end
+        return -1
+    end
+
+    -- Read + validate the 22-byte embedded scope path used by the
+    -- *_SCOPED variants. Layout (relative to record start):
+    --   +4..+13   10 zero bytes
+    --   +14 u16   scope_class  (in SCOPE_CLASSES)
+    --   +16 u16   scope_inst
+    --   +18 u16   target_class (== 0x006B)
+    --   +20 u16   target_inst
+    --   +22..+25  4 zero bytes
+    -- Returns a scope table or nil if any check fails.
+    local function read_scope(body, pos)
+        if pos + 26 > body:len() then return nil end
+        if not bytes_all_zero(body, pos + 4, 10) then return nil end
+        local scope_class = u16_le(body, pos + 14)
+        if not SCOPE_CLASSES[scope_class] then return nil end
+        local target_class = u16_le(body, pos + 18)
+        if target_class ~= TARGET_SCOPED then return nil end
+        if not bytes_all_zero(body, pos + 22, 4) then return nil end
+        return {
+            scope_class  = scope_class,
+            scope_inst   = u16_le(body, pos + 16),
+            target_class = target_class,
+            target_inst  = u16_le(body, pos + 20),
+        }
+    end
+
+    -- Each try_layout_* helper returns (consumed_bytes, rec_table,
+    -- layout_name) on success or nil on failure. rec_table carries the
+    -- per-field offsets the emission code uses below, so the dissector
+    -- never has to recompute them from the layout name.
+
+    local function try_layout_36(body, pos)
+        if pos + 36 > body:len() then return nil end
+        if u16_le(body, pos + 12) ~= MARKER_7F then return nil end
+        local count  = u16_le(body, pos + 32)
+        local strlen = u16_le(body, pos + 34)
+        if count ~= 1 or strlen <= 0 or strlen >= 8192 then return nil end
+        if pos + 36 + strlen > body:len() then return nil end
+        local bit_field = u16_le(body, pos + 10)
+        return 36 + strlen, {
+            class_marker  = u16_le(body, pos),
+            instance      = u16_le(body, pos + 2),
+            bit_field     = bit_field,
+            bit_number    = decode_bit_number(bit_field),
+            bit_field_off = 10,
+            ref_id_off    = 16,
+            count_off     = 32,
+            strlen_off    = 34,
+            str_off       = 36,
+            strlen        = strlen,
+        }, "LAYOUT_36"
+    end
+
+    local function try_layout_38(body, pos)
         if pos + 38 > body:len() then return nil end
+        if u16_le(body, pos + 14) ~= MARKER_7F then return nil end
+        local count  = u16_le(body, pos + 34)
+        local strlen = u16_le(body, pos + 36)
+        if count ~= 1 or strlen <= 0 or strlen >= 8192 then return nil end
+        if pos + 38 + strlen > body:len() then return nil end
+        return 38 + strlen, {
+            class_marker = u16_le(body, pos),
+            instance     = u16_le(body, pos + 2),
+            sub_inst     = u16_le(body, pos + 6),
+            sub_inst_off = 6,
+            ref_id_off   = 18,
+            count_off    = 34,
+            strlen_off   = 36,
+            str_off      = 38,
+            strlen       = strlen,
+        }, "LAYOUT_38"
+    end
+
+    local function try_layout_opstr(body, pos)
+        -- 8 zero bytes at +4..+11, u16 osl at +12, operand at +14.
+        if pos + 14 > body:len() then return nil end
+        if not bytes_all_zero(body, pos + 4, 8) then return nil end
+        local osl = u16_le(body, pos + 12)
+        if osl < 1 or osl > 64 then return nil end
+        local m_off  = 14 + osl
+        local ct_off = 34 + osl
+        local sl_off = 36 + osl
+        local str_off = 38 + osl
+        if pos + str_off > body:len() then return nil end
+        if u16_le(body, pos + m_off) ~= MARKER_7F then return nil end
+        local count  = u16_le(body, pos + ct_off)
+        local strlen = u16_le(body, pos + sl_off)
+        if count ~= 1 or strlen <= 0 or strlen >= 8192 then return nil end
+        if pos + str_off + strlen > body:len() then return nil end
+        if not ascii_printable(body, pos + 14, osl) then return nil end
+        return str_off + strlen, {
+            class_marker = u16_le(body, pos),
+            instance     = u16_le(body, pos + 2),
+            osl          = osl,
+            osl_off      = 12,
+            operand      = body(pos + 14, osl):string(),
+            operand_off  = 14,
+            ref_id_off   = m_off + 4,
+            count_off    = ct_off,
+            strlen_off   = sl_off,
+            str_off      = str_off,
+            strlen       = strlen,
+        }, "LAYOUT_OPSTR"
+    end
+
+    local function try_layout_opstr_short(body, pos)
+        -- 4 zero bytes at +4..+7, u16 osl at +8, operand at +10. osl
+        -- must be >= 3; osl <= 2 collides with LAYOUT_36's marker
+        -- position and is the LAYOUT_36 bit_field decode's
+        -- responsibility (the Python parser handles it that way).
+        if pos + 12 > body:len() then return nil end
+        if not bytes_all_zero(body, pos + 4, 4) then return nil end
+        local osl = u16_le(body, pos + 8)
+        if osl < 3 or osl > 64 then return nil end
+        local m_off  = 10 + osl
+        local ct_off = 30 + osl
+        local sl_off = 32 + osl
+        local str_off = 34 + osl
+        if pos + str_off > body:len() then return nil end
+        if u16_le(body, pos + m_off) ~= MARKER_7F then return nil end
+        local count  = u16_le(body, pos + ct_off)
+        local strlen = u16_le(body, pos + sl_off)
+        if count ~= 1 or strlen <= 0 or strlen >= 8192 then return nil end
+        if pos + str_off + strlen > body:len() then return nil end
+        if not ascii_printable(body, pos + 10, osl) then return nil end
+        return str_off + strlen, {
+            class_marker = u16_le(body, pos),
+            instance     = u16_le(body, pos + 2),
+            osl          = osl,
+            osl_off      = 8,
+            operand      = body(pos + 10, osl):string(),
+            operand_off  = 10,
+            ref_id_off   = m_off + 4,
+            count_off    = ct_off,
+            strlen_off   = sl_off,
+            str_off      = str_off,
+            strlen       = strlen,
+        }, "LAYOUT_OPSTR_SHORT"
+    end
+
+    local function try_layout_36_scoped(body, pos)
+        local scope = read_scope(body, pos)
+        if not scope then return nil end
+        -- LAYOUT_36 fields shifted by +18 (the embedded scope path
+        -- occupies +4..+25, of which the first 6 bytes overlap the
+        -- 6-zero pad LAYOUT_36 already had at +4..+9 — net shift +18).
+        local bit_field_off = 28  -- 10 + 18
+        local m_off         = 30  -- 12 + 18
+        local ref_id_off    = 34  -- 16 + 18
+        local count_off     = 50  -- 32 + 18
+        local sl_off        = 52  -- 34 + 18
+        local str_off       = 54  -- 36 + 18
+        if pos + str_off > body:len() then return nil end
+        if u16_le(body, pos + m_off) ~= MARKER_7F then return nil end
+        local count  = u16_le(body, pos + count_off)
+        local strlen = u16_le(body, pos + sl_off)
+        if count ~= 1 or strlen <= 0 or strlen >= 8192 then return nil end
+        if pos + str_off + strlen > body:len() then return nil end
+        local bit_field = u16_le(body, pos + bit_field_off)
+        return str_off + strlen, {
+            class_marker  = u16_le(body, pos),
+            instance      = u16_le(body, pos + 2),
+            scope         = scope,
+            bit_field     = bit_field,
+            bit_number    = decode_bit_number(bit_field),
+            bit_field_off = bit_field_off,
+            ref_id_off    = ref_id_off,
+            count_off     = count_off,
+            strlen_off    = sl_off,
+            str_off       = str_off,
+            strlen        = strlen,
+        }, "LAYOUT_36_SCOPED"
+    end
+
+    local function try_layout_opstr_scoped(body, pos)
+        local scope = read_scope(body, pos)
+        if not scope then return nil end
+        if pos + 28 > body:len() then return nil end
+        -- OPSTR tail starts at +26 (osl) / +28 (operand). Marker at
+        -- +28+osl, then LAYOUT_38-like trailer shifted by +14+osl
+        -- relative to bare LAYOUT_OPSTR.
+        local osl = u16_le(body, pos + 26)
+        if osl < 1 or osl > 64 then return nil end
+        local m_off   = 28 + osl
+        local ct_off  = 48 + osl
+        local sl_off  = 50 + osl
+        local str_off = 52 + osl
+        if pos + str_off > body:len() then return nil end
+        if u16_le(body, pos + m_off) ~= MARKER_7F then return nil end
+        local count  = u16_le(body, pos + ct_off)
+        local strlen = u16_le(body, pos + sl_off)
+        if count ~= 1 or strlen <= 0 or strlen >= 8192 then return nil end
+        if pos + str_off + strlen > body:len() then return nil end
+        if not ascii_printable(body, pos + 28, osl) then return nil end
+        return str_off + strlen, {
+            class_marker = u16_le(body, pos),
+            instance     = u16_le(body, pos + 2),
+            scope        = scope,
+            osl          = osl,
+            osl_off      = 26,
+            operand      = body(pos + 28, osl):string(),
+            operand_off  = 28,
+            ref_id_off   = m_off + 4,
+            count_off    = ct_off,
+            strlen_off   = sl_off,
+            str_off      = str_off,
+            strlen       = strlen,
+        }, "LAYOUT_OPSTR_SCOPED"
+    end
+
+    local LAYOUT_TRY_FNS = {
+        LAYOUT_36           = try_layout_36,
+        LAYOUT_38           = try_layout_38,
+        LAYOUT_OPSTR        = try_layout_opstr,
+        LAYOUT_OPSTR_SHORT  = try_layout_opstr_short,
+        LAYOUT_36_SCOPED    = try_layout_36_scoped,
+        LAYOUT_OPSTR_SCOPED = try_layout_opstr_scoped,
+    }
+
+    local function try_record(body, pos)
+        if pos + 2 > body:len() then return nil end
         local cm = u16_le(body, pos)
-        if not DOC_CLASSES[cm] then return nil end
-
-        -- Probe LAYOUT_38 first (more common). marker at +14 = 0x007F.
-        if pos + 38 <= body:len() then
-            local marker_38 = u16_le(body, pos + 14)
-            local one_38    = u16_le(body, pos + 16)
-            if marker_38 == 0x007F and one_38 == 0x0001 then
-                local count  = u16_le(body, pos + 34)
-                local strlen = u16_le(body, pos + 36)
-                local end_pos = pos + 38 + strlen
-                if end_pos <= body:len() then
-                    local rec = {
-                        class_marker = cm,
-                        instance     = u16_le(body, pos + 2),
-                        sub_inst     = u16_le(body, pos + 6),
-                        ref_id       = u16_le(body, pos + 18),
-                        count        = count,
-                        strlen       = strlen,
-                        str_off      = 38,
-                    }
-                    return end_pos - pos, rec, "LAYOUT_38"
-                end
-            end
+        local allowed = LAYOUTS_BY_CLASS[cm]
+        if not allowed then return nil end
+        for _, name in ipairs(allowed) do
+            local consumed, rec, layout = LAYOUT_TRY_FNS[name](body, pos)
+            if consumed then return consumed, rec, layout end
         end
-
-        -- LAYOUT_36: marker at +12 = 0x007F, +14 = 0x0001
-        if pos + 36 <= body:len() then
-            local marker_36 = u16_le(body, pos + 12)
-            local one_36    = u16_le(body, pos + 14)
-            if marker_36 == 0x007F and one_36 == 0x0001 then
-                local count  = u16_le(body, pos + 32)
-                local strlen = u16_le(body, pos + 34)
-                local end_pos = pos + 36 + strlen
-                if end_pos <= body:len() then
-                    local bit_field = u16_le(body, pos + 10)
-                    local bit_num   = -1
-                    if bit_field >= OPERAND_BIT_BASE
-                        and (bit_field - OPERAND_BIT_BASE)
-                            % OPERAND_BIT_STRIDE == 0 then
-                        bit_num =
-                            (bit_field - OPERAND_BIT_BASE) // OPERAND_BIT_STRIDE
-                    end
-                    local rec = {
-                        class_marker = cm,
-                        instance     = u16_le(body, pos + 2),
-                        ref_id       = u16_le(body, pos + 16),
-                        bit_field    = bit_field,
-                        bit_number   = bit_num,
-                        count        = count,
-                        strlen       = strlen,
-                        str_off      = 36,
-                    }
-                    return end_pos - pos, rec, "LAYOUT_36"
-                end
-            end
-        end
-
         return nil
     end
 
@@ -350,9 +599,19 @@ function M.register(proto, valstr, ctx)
                 if pos + 2 <= body:len() then
                     local cm = u16_le(body, pos)
                     if DOC_CLASSES[cm] then
-                        -- We saw a class marker we should know but the
-                        -- layout didn't match either supported one.
-                        -- Probably OPSTR / SCOPED variant.
+                        -- We saw a known class_marker but no candidate
+                        -- layout for that class validated. Counted as
+                        -- skipped for regression visibility. Common
+                        -- residual sources:
+                        --   - class 0x0349 attribute-value records
+                        --     (count != 1 — not text descriptions; the
+                        --     Python parser also ignores these)
+                        --   - records whose strlen extends past the
+                        --     end of THIS frame's body (true cross-
+                        --     packet description records; would need
+                        --     TCP reassembly to parse)
+                        --   - coincidental marker bytes inside a
+                        --     previous record's payload
                         skipped = skipped + 1
                     end
                 end
@@ -363,20 +622,32 @@ function M.register(proto, valstr, ctx)
                 rt:add_le(f.class_marker, body(pos, 2))
                 rt:add(f.layout, layout):set_generated()
                 rt:add_le(f.instance,     body(pos + 2, 2))
-                if layout == "LAYOUT_38" then
-                    rt:add_le(f.routine_inst, body(pos + 6, 2))
-                    rt:add_le(f.ref_id,       body(pos + 18, 2))
-                    rt:add_le(f.count,        body(pos + 34, 2))
-                    rt:add_le(f.strlen,       body(pos + 36, 2))
-                else  -- LAYOUT_36
-                    rt:add_le(f.bit_field,    body(pos + 10, 2))
+                if rec.scope then
+                    rt:add_le(f.scope_class,  body(pos + 14, 2))
+                    rt:add_le(f.scope_inst,   body(pos + 16, 2))
+                    rt:add_le(f.target_class, body(pos + 18, 2))
+                    rt:add_le(f.target_inst,  body(pos + 20, 2))
+                end
+                if rec.osl then
+                    rt:add_le(f.osl, body(pos + rec.osl_off, 2))
+                    rt:add(f.operand,
+                           body(pos + rec.operand_off, rec.osl),
+                           rec.operand)
+                end
+                if rec.bit_field then
+                    rt:add_le(f.bit_field,
+                              body(pos + rec.bit_field_off, 2))
                     if rec.bit_number >= 0 then
                         rt:add(f.bit_number, rec.bit_number):set_generated()
                     end
-                    rt:add_le(f.ref_id,       body(pos + 16, 2))
-                    rt:add_le(f.count,        body(pos + 32, 2))
-                    rt:add_le(f.strlen,       body(pos + 34, 2))
                 end
+                if rec.sub_inst_off then
+                    rt:add_le(f.routine_inst,
+                              body(pos + rec.sub_inst_off, 2))
+                end
+                rt:add_le(f.ref_id, body(pos + rec.ref_id_off, 2))
+                rt:add_le(f.count,  body(pos + rec.count_off, 2))
+                rt:add_le(f.strlen, body(pos + rec.strlen_off, 2))
 
                 local text, compressed, dec_size = decode_text(body, pos, rec)
                 if compressed then
@@ -393,8 +664,12 @@ function M.register(proto, valstr, ctx)
             end
         end
         subtree:add(f.records_count, count):set_generated()
+        -- Always-emit (even when zero) so the golden PDML files have a
+        -- stable regression guard against new unsupported layouts
+        -- creeping back in. The expert info is still conditional on a
+        -- non-zero skip count.
+        subtree:add(f.records_skipped, skipped):set_generated()
         if skipped > 0 then
-            subtree:add(f.records_skipped, skipped):set_generated()
             subtree:add_proto_expert_info(expert_unsupported)
         end
         if count > 0 then

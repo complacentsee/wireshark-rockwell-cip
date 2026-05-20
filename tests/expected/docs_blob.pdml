@@ -641,6 +641,7 @@
   <proto name="rockwell_cip" showname="Rockwell description records (class 0x0349)" size="12" pos="108">
     <field name="rockwell_cip.docs.request_in" showname="Request In: 1" size="0" pos="108" show="1"/>
     <field name="rockwell_cip.docs.records_count" showname="Record Count: 0" size="0" pos="108" show="0"/>
+    <field name="rockwell_cip.docs.records_skipped" showname="Records Skipped (unparsed layout): 0" size="0" pos="108" show="0"/>
   </proto>
 </packet>
 
