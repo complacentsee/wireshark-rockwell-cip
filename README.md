@@ -61,13 +61,52 @@ tshark -X lua_script:plugins/lua/rockwell_cip.lua -r capture.pcapng
 
 Once loaded, these display filters become available:
 
-- `rockwell_cip.signed.service`           — service code of an HMAC-wrapped CIP request
-- `rockwell_cip.signed.seq`               — HMAC trailer sequence number
-- `rockwell_cip.body_3a.op`               — `0x5D` op code (3 / 4 / 9)
-- `rockwell_cip.body_3a.zlib_size`        — compressed size from the init reply
-- `rockwell_cip.doc_record.scope_class`   — embedded scope-path class (`0x68` = program, `0x338` = AOI)
-- `rockwell_cip.doc_record.operand`       — operand string for `[N]` / `.N` / `.DATA[0].2` style comments
-- `rockwell_cip.udi_param.usage`          — UDI parameter usage (Input/Output/InOut/Local)
+Service 0x36 / 0xB6 — HMAC-signed CIP wrapper:
+- `rockwell_cip.signed.service`           — service byte (0x36 / 0xB6)
+- `rockwell_cip.signed.seq`               — session sequence number
+- `rockwell_cip.signed.hmac`               — raw HMAC-SHA1 trailer bytes
+- `rockwell_cip.signed.hmac_status`       — `OK` / `MISMATCH` / `(no key)`
+
+Service 0x3A / 0xBA — compiled-body upload transport:
+- `rockwell_cip.upload.state`             — state byte (0x00..0x03 init/cont, more/final)
+- `rockwell_cip.upload.token`             — continuation token (req side)
+- `rockwell_cip.upload.token_echo`        — token echo (reply side)
+- `rockwell_cip.upload.op`                — inner 0x5D op (3 read / 4 release / 9 bulk)
+- `rockwell_cip.upload.zlib_offset`       — where the zlib stream starts in the chunk
+- `rockwell_cip.upload.inflated_size`     — inflated payload size (when preference enabled)
+
+Class 0x0064 — Path-A handshake:
+- `rockwell_cip.handshake.phase`          — Phase 1/2 request/reply
+- `rockwell_cip.handshake.challenge`      — 128-byte Phase 1 challenge body
+- `rockwell_cip.handshake.response`       — 20-byte Phase 2 response body
+
+Class 0x0349 — description records:
+- `rockwell_cip.docs.class_marker`        — target class (0x68 = program, 0x338 = AOI, ...)
+- `rockwell_cip.docs.text`                — decoded comment text
+- `rockwell_cip.docs.bit_number`          — decoded bit number for operand-bit comments
+- `rockwell_cip.docs.compressed`          — true when the body used the 0x8280 zlib marker
+
+Class 0x338 — AOI definition (UDIParameters):
+- `rockwell_cip.aoi.param_name`           — UDIParameters entry name
+- `rockwell_cip.aoi.param_usage`          — usage direction (Input/Output/InOut/Local)
+- `rockwell_cip.aoi.param_vis`            — visibility flags
+
+The `class_attrs` module also adds attribute-name hints for class 0x6C
+(Template) and 0x8D (MessageParameters) responses; those show up as
+generated sub-trees under the stock CIP tree.
+
+## Pcaps & test fixtures
+
+This repository ships **no pcap files**. Live capture material — even
+sanitised — stays in your local environment, never in source control.
+
+To run the dissector test suite (`pytest tests/`), set the env var
+`ROCKWELL_CIP_FIXTURES` to a directory of local `.pcapng` files (or
+populate the default `~/.cache/rockwell_cip/`). Each fixture maps to a
+committed `tests/expected/<name>.pdml` reference output that the suite
+diffs against the live `tshark` run. Use `pytest --regen` to refresh
+expectations after intentional dissector changes; review the diffs
+before committing.
 
 ## How this maps to a future Wireshark upstream MR
 

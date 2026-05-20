@@ -1,66 +1,98 @@
 -- SPDX-License-Identifier: GPL-2.0-or-later
 --
--- rockwell_cip.lua — master loader for the Rockwell-private CIP
--- extensions plugin. Pulls in one sub-module per service / class so the
--- on-disk layout mirrors how the C port (see proto-c/) would be split
--- into translation units.
+-- rockwell_cip.lua — master plugin loader for the Rockwell-private CIP
+-- extensions dissector. Each per-feature sub-module under lua/ adds
+-- ProtoFields to the single 'rockwell_cip' proto (so all display
+-- filters share the namespace) and registers a dissect callback the
+-- master dispatches in order.
 --
--- Wireshark loads any .lua file under its plugins directory at startup,
--- so this file lives at the plugin root and 'requires' siblings via
--- relative paths.
+-- Wireshark loads .lua files at the plugin directory's top level. We
+-- expose siblings via package.path so sub-modules and shared utils can
+-- `require` each other.
 
--- Make sibling directories importable. Wireshark adds the plugin's own
--- directory to the Lua path, so we just need to nudge it for our
--- sub-directories. Layout:
---   plugins/lua/rockwell_cip.lua    -- this file
---   plugins/lua/lua/<module>.lua    -- sub-module files
---   plugins/lua/util/<helper>.lua   -- shared helpers (valstr, …)
 local plugin_dir = debug.getinfo(1, "S").source
-    :sub(2)                  -- strip the leading "@"
-    :match("^(.*[/\\])")     -- drop the filename
+    :sub(2)
+    :match("^(.*[/\\])")
 if plugin_dir then
     package.path = plugin_dir .. "lua/?.lua;"
                 .. plugin_dir .. "util/?.lua;"
                 .. package.path
 end
 
--- Load the shared bits first so sub-modules can pull from them.
-local valstr = require "valstr"
-
--- The protocol stub. Each sub-module attaches its fields to this proto
--- so display filters get a single namespace ("rockwell_cip.*"). The
--- dissector function itself is a no-op — sub-modules register
--- themselves as Decode-As / heuristic handlers off the existing 'cip'
--- dissector.
 local proto = Proto("rockwell_cip",
                     "Rockwell Automation CIP vendor extensions")
 
--- Sub-modules: each returns a register(proto, valstr) function so all
--- ProtoField allocation stays under our single proto.
+local valstr = require "valstr"
+
+-- Sub-module contract:
+--   mod.register(proto, valstr, ctx)  -- one call per module
+--   ctx.add_field(fld)    -> appends ProtoField; the master assigns
+--                            proto.fields ONCE after all modules ran
+--                            (Wireshark only honours a single
+--                            proto.fields assignment per Proto, so
+--                            modules cannot append in place)
+--   ctx.add_expert(e)     -> same for ProtoExpert / proto.experts
+--   ctx.add_dissect(name, fn) -> appends a per-packet callback to a
+--                                chain the master dispatches in order
+local all_fields  = {}
+local all_experts = {}
+local callbacks   = {}
+
+local ctx = {
+    add_field   = function(fld) table.insert(all_fields,  fld) end,
+    add_expert  = function(e)   table.insert(all_experts, e)   end,
+    add_dissect = function(name, fn)
+        table.insert(callbacks, { name = name, fn = fn })
+    end,
+}
+
 local modules = {
+    "class_0064_handshake",   -- run first so the HMAC key is cached
+                              -- before signed/upload modules look it up
     "service_36_signed",
-    -- Future phases — uncomment as each lands so the load fails loud
-    -- when the file is missing rather than silently skipping it.
-    -- "service_3a_upload",
+    "service_3a_upload",
+    "class_0349_docs",
+    "class_attrs",        -- 0x6C / 0x8D attribute names, 0x338 UDIParameters
+    -- Future sub-modules; uncomment when added.
     -- "class_0349_docs",
     -- "class_0338_aoi",
     -- "class_006c_template",
     -- "class_008d_msgparams",
-    -- "class_0064_handshake",
 }
 
 for _, name in ipairs(modules) do
     local ok, mod = pcall(require, name)
     if not ok then
-        -- Don't kill the whole plugin if one sub-module has a typo.
-        -- tshark surfaces this in stderr; Wireshark surfaces it in the
-        -- Lua console.
         io.stderr:write(string.format(
             "[rockwell_cip] failed to load %s: %s\n", name, mod))
     elseif type(mod) == "table" and type(mod.register) == "function" then
-        mod.register(proto, valstr)
+        local rok, rerr = pcall(mod.register, proto, valstr, ctx)
+        if not rok then
+            io.stderr:write(string.format(
+                "[rockwell_cip] %s.register() failed: %s\n", name, rerr))
+        end
     end
 end
 
--- Expose the proto so users can `lua_script1:capture.lua` chains etc.
+-- Single assignment per Proto. After this, Wireshark allocates the
+-- field IDs and the proto is frozen w.r.t. field schema.
+proto.fields  = all_fields
+proto.experts = all_experts
+
+-- Master dissector: invoke each sub-module's dissect in turn. We don't
+-- short-circuit — every callback may want to annotate the same frame
+-- (e.g. the handshake module and the signed module both react to
+-- different service codes, but both can see every packet).
+function proto.dissector(tvb, pinfo, tree)
+    for _, cb in ipairs(callbacks) do
+        local ok, err = pcall(cb.fn, tvb, pinfo, tree)
+        if not ok then
+            io.stderr:write(string.format(
+                "[rockwell_cip] %s.dissect failed: %s\n", cb.name, err))
+        end
+    end
+end
+
+register_postdissector(proto, true)
+
 return proto

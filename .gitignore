@@ -1,8 +1,9 @@
-# Pcaps with live PLC traffic — sanitised fixtures go in tests/fixtures/
-# only, after running tools/sanitize_pcap.py.
+# No pcaps in this repository, full stop. Live capture material stays
+# out of source control even when sanitised — tests regenerate any
+# needed inputs locally via tools/extract_fixture.py against a developer-
+# owned pcap, and the fixture files live outside the repo tree.
 *.pcap
 *.pcapng
-!tests/fixtures/*.pcapng
 
 # Python / pytest scratch
 __pycache__/

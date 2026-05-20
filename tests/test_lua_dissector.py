@@ -1,9 +1,14 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Dissector-level tests: tshark + Lua plugin → PDML diff vs expected.
 
-Test naming convention:
-    tests/fixtures/<feature>.pcapng       -> input
-    tests/expected/<feature>.pdml         -> expected output
+Pcaps are NOT committed to this repository. Set the env var
+ROCKWELL_CIP_FIXTURES to a directory of local `.pcapng` files (or
+populate the default ~/.cache/rockwell_cip/). See tests/conftest.py for
+the resolution rules.
+
+Test naming convention (within the fixtures directory):
+    <feature>.pcapng       -> input
+    tests/expected/<feature>.pdml  -> expected output (committed)
 
 Each test is one fixture. The diff is plain-text so reviewing a failure
 is "tail tests/<feature>.pdml.diff" — same workflow as upstream
@@ -12,26 +17,39 @@ Wireshark's own dissector test suite.
 from __future__ import annotations
 
 import difflib
+import os
 import pathlib
 
 import pytest
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-FIXTURES = REPO_ROOT / "tests" / "fixtures"
 EXPECTED = REPO_ROOT / "tests" / "expected"
+
+# Re-resolve the fixtures directory at collection time (mirroring
+# conftest.py) so parametrize() can enumerate inputs.
+_ENV_DIR = os.environ.get("ROCKWELL_CIP_FIXTURES")
+_FIXTURES = (
+    pathlib.Path(_ENV_DIR).expanduser()
+    if _ENV_DIR
+    else pathlib.Path.home() / ".cache" / "rockwell_cip"
+)
 
 
 def fixtures_present():
-    return sorted(p.name for p in FIXTURES.glob("*.pcapng"))
+    if not _FIXTURES.is_dir():
+        return []
+    return sorted(p.name for p in _FIXTURES.glob("*.pcapng"))
 
 
 @pytest.mark.parametrize("fixture", fixtures_present() or ["__none__"])
 def test_pdml_matches_expected(fixture, pdml_for, request):
     if fixture == "__none__":
         pytest.skip(
-            "No fixtures committed yet — add tests/fixtures/*.pcapng "
-            "with tools/sanitize_pcap.py before running this suite."
+            f"No pcaps found in {_FIXTURES}. "
+            "Pcaps are intentionally NOT committed to this repository — "
+            "set ROCKWELL_CIP_FIXTURES to a local directory of "
+            "developer-owned pcaps before running this suite."
         )
 
     actual = pdml_for(fixture)

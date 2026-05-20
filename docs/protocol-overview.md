@@ -110,18 +110,36 @@ the bit number (0..63 for LINT, 0..31 for DINT, etc.).
 
 ## Handshake
 
-The 0x36 wrapper's HMAC key is derived during a two-phase handshake on
-class 0x0064 (Logix Controller):
+The 0x36 wrapper's HMAC key is established during a two-phase handshake
+on class 0x0064 (Logix Controller). The wire format is known; the KDF
+(key-derivation function) is not yet reverse-engineered:
 
-1. **Phase 1**: client sends service 0x4C with a small auth body, PLC
-   replies with a 128-byte challenge nonce.
-2. **Phase 2**: client replies with `SHA-1^20(challenge[0:64])` — the
-   SHA-1 hash iterated 20 times over the first 64 bytes of the
-   challenge. PLC validates and keeps `challenge[0:64]` as the HMAC
-   session key.
+1. **Phase 1**: client sends service `0x4B` with a small auth body. PLC
+   replies with service `0xCB`; reply CIP body is a u16-LE length prefix
+   (`0x0080` = 128) followed by 128 bytes of challenge / nonce material.
+2. **Phase 2**: client sends service `0x4C`; CIP body is a u16-LE length
+   prefix (`0x0014` = 20) followed by 20 bytes of response material. PLC
+   replies with service `0xCC` carrying a small `license_status` ack.
 
-After Phase 2, every signed message uses that 64-byte key in
-HMAC-SHA1; the session sequence number starts at 1.
+**What's known**: the byte layouts above, captured against
+`upload.pcapng` (Studio v36 ↔ ControlLogix).
+
+**What's open**:
+- The function that maps the 128-byte challenge to the 64-byte
+  HMAC-SHA1 key. SHA-1^N(challenge[0:64]) was an earlier guess; an
+  exhaustive search over `N=1..40` and over `{challenge[0:64],
+  challenge[64:128], full 128, prefixes 20/32}` produced no match
+  against the observed 20-byte Phase 2 response.
+- Whether the HMAC key is `challenge[0:64]`, `challenge[64:128]`, or a
+  derived value. The Lua dissector caches both halves as candidates and
+  tries each against the actual HMAC trailer of the first 0x36 frame on
+  the same stream; in `upload.pcapng` neither matches, so the key is
+  some transformation we haven't recovered.
+
+Until the KDF is recovered, validate HMACs by supplying a 64-byte key
+out-of-band via the `rockwell_cip.hmac_key` preference (128 hex
+characters). The dissector then validates every 0x36 / 0xB6 trailer on
+every stream and reports OK/MISMATCH per frame.
 
 ## Where this isn't enough
 
