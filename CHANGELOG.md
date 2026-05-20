@@ -19,7 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     validation against preference + handshake candidates.
   - `service_3a_upload` — 0x3A/0xBA wrapper with state enum, chunk-
     header / zlib split, single-frame inflate behind a preference.
-  - `class_0349_docs` — LAYOUT_36 + LAYOUT_38 description-record walker.
+  - `class_0349_docs` — six-layout description-record walker with
+    multi-chunk reassembly: paginated 0x53 replies (v36 stride 458B)
+    have their page_data concatenated per-conversation so records that
+    straddle the chunk boundary decode correctly; continuation frames
+    surface `continuation=true` + `chunk_size` + `complete_in`, and
+    completion-side records gain `chunks_in` + `first_chunk`. Gap
+    detection on the echoed request-offset resets the accumulator when
+    a carved/dropped capture skips intermediate pages.
   - `class_attrs` — class 0x6C / 0x8D attribute name hints,
     UDIParameters magic detection.
 - Shared utilities under `plugins/lua/util/`:

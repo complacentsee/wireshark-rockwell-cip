@@ -50,10 +50,54 @@ function M.get(pinfo)
                 by_seq   = {},        -- [signed seq u32] -> req record
                 by_frame = {},        -- [req frame number] -> req record
             },
+            -- Class 0x0349 paginated-read accumulator state. The 0x53
+            -- reply on class 0x349 is a stream of fixed-stride pages
+            -- (v36: 458B) whose record bodies routinely straddle page
+            -- boundaries — see cip_upload/extract_logix_data.py:1090.
+            -- Reassembly is conv-scoped because pagination is driven by
+            -- the client's request-offset and there is no per-chunk
+            -- header on the wire to key off frame-globally.
+            docs_stream      = nil,
         }
         sessions[k] = s
     end
     return s
+end
+
+-- Open (or reset) the per-conversation docs accumulator. Called when a
+-- 0x349 reply arrives and either no stream is in flight or the prior
+-- stream has been closed. `frame_results` survives the reset so cached
+-- per-frame render data from the prior stream isn't lost.
+function M.docs_stream_open(pinfo)
+    local s = M.get(pinfo)
+    local prior_results = s.docs_stream and s.docs_stream.frame_results or {}
+    s.docs_stream = {
+        -- 1-indexed list of ingested chunks in arrival order:
+        --   { frame = u32, accum_off = u32, page_size = u32 }
+        chunks          = {},
+        -- Concatenated page_data (post 8B echo strip) of every chunk.
+        -- Lua string so substring / byte indexing are cheap.
+        accumulator     = "",
+        -- Bytes [walk_pos..#accumulator) are unparsed — either an
+        -- in-progress record's tail or the next record's header.
+        walk_pos        = 0,
+        -- Page size of the first chunk; used for short-page close.
+        first_page_size = nil,
+        -- Echoed request page offset of the most recently ingested
+        -- chunk. Consecutive contiguous pages advance by page_size
+        -- exactly; a different delta means the carved fixture (or
+        -- packet loss) skipped intermediate pages and we should reset
+        -- the accumulator rather than corrupt cross-chunk records by
+        -- splicing non-adjacent bytes.
+        last_req_offset = nil,
+        -- Set after a short page / zero page / v21 echo[1]=0x02 marker.
+        -- Next reply arriving with closed=true triggers another reset.
+        closed          = false,
+        -- frame_number -> render result. Survives stream reset; pass-2
+        -- of `tshark -2` replays from here without re-ingesting.
+        frame_results   = prior_results,
+    }
+    return s.docs_stream
 end
 
 local override_key = nil
