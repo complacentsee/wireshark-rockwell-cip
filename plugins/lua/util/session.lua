@@ -46,6 +46,10 @@ function M.get(pinfo)
             response         = nil,   -- 20B Phase 2 request body
             hmac_key         = nil,   -- key proven to validate HMACs
                                        -- on this stream (set by signed)
+            pending_requests = {
+                by_seq   = {},        -- [signed seq u32] -> req record
+                by_frame = {},        -- [req frame number] -> req record
+            },
         }
         sessions[k] = s
     end
@@ -92,6 +96,51 @@ end
 
 function M.reset()
     sessions = {}
+end
+
+-- Pending-request bookkeeping. Sub-modules that dispatch on a service
+-- code only the *request* exposes (e.g. class 0x0349 documentation
+-- reads, where the reply has no epath and so can't be self-identified)
+-- call record_request on the request frame and lookup_request on the
+-- reply. The seq argument is the signed-CIP wrapper sequence number
+-- (rockwell_cip.signed.seq) if known — same seq pairs request to reply
+-- on the same conversation. frame_hint is the request frame number
+-- when known via the stock cip dissector's conversation tracking
+-- (cip.request_frame on the reply); used as a fallback when there's no
+-- signed wrapper.
+function M.record_request(pinfo, seq, target_class)
+    local s = M.get(pinfo)
+    local frame = pinfo.number
+    local existing = (seq and s.pending_requests.by_seq[seq])
+        or s.pending_requests.by_frame[frame]
+    if existing
+       and existing.req_frame == frame
+       and existing.class == target_class then
+        return existing
+    end
+    local rec = {
+        class       = target_class,
+        req_frame   = frame,
+        reply_frame = nil,
+    }
+    if seq then
+        s.pending_requests.by_seq[seq] = rec
+    end
+    s.pending_requests.by_frame[frame] = rec
+    return rec
+end
+
+function M.lookup_request(pinfo, seq, frame_hint)
+    local s = M.get(pinfo)
+    if seq then
+        local rec = s.pending_requests.by_seq[seq]
+        if rec then return rec end
+    end
+    if frame_hint then
+        local rec = s.pending_requests.by_frame[frame_hint]
+        if rec then return rec end
+    end
+    return nil
 end
 
 return M

@@ -118,6 +118,10 @@ def run_tshark(tshark_bin: str, plugin_path: pathlib.Path,
         "-T", "pdml",
         # Disable name resolution so PDML output is stable across runs.
         "-n",
+        # Two-pass analysis so request/response cross-references (e.g.
+        # rockwell_cip.docs.response_in on the request frame, populated
+        # only after the matching reply has been seen) render in PDML.
+        "-2",
     ]
     # Pin TZ to UTC so frame.time's local-time `show=` field doesn't
     # vary by host timezone. UTC arrival fields are already stable.

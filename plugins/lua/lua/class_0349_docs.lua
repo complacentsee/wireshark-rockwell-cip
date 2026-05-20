@@ -69,6 +69,7 @@ local M = {}
 
 function M.register(proto, valstr, ctx)
     local inflate = require "inflate"
+    local session = require "session"
 
     local f = {}
     f.records       = ProtoField.string("rockwell_cip.docs.records",
@@ -104,6 +105,14 @@ function M.register(proto, valstr, ctx)
     f.records_skipped = ProtoField.uint32(
         "rockwell_cip.docs.records_skipped",
         "Records Skipped (unparsed layout)", base.DEC)
+    -- request_in on the reply works fine; the inverse (response_in on
+    -- the request) would require mutating the request frame's tree
+    -- after the reply has been seen, which Wireshark's Lua post-
+    -- dissector model doesn't support — pass 1 of -2 doesn't expose
+    -- fields to Lua, and pass 2 walks frames in order. Users can
+    -- pivot request -> reply via the already-populated enip.response_in.
+    f.request_in    = ProtoField.framenum("rockwell_cip.docs.request_in",
+        "Request In", base.NONE, frametype.REQUEST)
 
     for _, fld in pairs(f) do ctx.add_field(fld) end
 
@@ -232,8 +241,12 @@ function M.register(proto, valstr, ctx)
     end
 
     local field_cip_service = Field.new("cip.service")
-    local field_cip_class   = Field.new("cip.class")
     local field_cip_epath   = Field.new("cip.epath")
+    -- cip.request_frame is a generated field the stock cip dissector
+    -- emits on replies when conversation tracking succeeds. Optional —
+    -- not present in older builds — so guard with pcall.
+    local ok_rf, field_cip_request_frame = pcall(Field.new, "cip.request_frame")
+    if not ok_rf then field_cip_request_frame = nil end
 
     -- 16-bit class segment for class 0x349: 21 00 49 03 (LE).
     local CLASS_0349_PATH = "\x21\x00\x49\x03"
@@ -244,33 +257,85 @@ function M.register(proto, valstr, ctx)
         return string.find(raw, CLASS_0349_PATH, 1, true) ~= nil
     end
 
-    local function dissect(tvb, pinfo, tree)
-        -- Class 0x349 is encoded as a 16-bit class segment, which the
-        -- stock cip dissector exposes via cip.epath rather than the
-        -- 8-bit cip.class field. Check both.
-        local class_fi = field_cip_class()
-        local hit_8bit = class_fi and class_fi.value == 0x49
-                                  and false  -- 0x349 wouldn't fit in 8b
-        local hit_16bit = path_targets_0349(field_cip_epath())
-        if not hit_8bit and not hit_16bit then return end
+    -- In a signed-CIP frame the stock cip dissector emits TWO
+    -- cip.epath fields (outer Message Router path, then the recursed
+    -- inner CIP's path). Field()() returns just the first one, so
+    -- iterate over all instances and accept a match anywhere.
+    local function any_epath_targets_0349()
+        for _, fi in ipairs({field_cip_epath()}) do
+            if path_targets_0349(fi) then return true end
+        end
+        return false
+    end
 
+    local function get_signed_seq(pinfo)
+        local s = pinfo.private["rockwell_cip.signed.seq"]
+        if not s then return nil end
+        return tonumber(s)
+    end
+
+    local function get_cip_request_frame()
+        if not field_cip_request_frame then return nil end
+        local fi = field_cip_request_frame()
+        return fi and fi.value or nil
+    end
+
+
+    local function dissect(tvb, pinfo, tree)
+        -- The reply to a class-0x349 read carries no epath of its own,
+        -- so we can't self-identify it from the reply bytes. Instead we
+        -- track requests (which DO carry the 21 00 49 03 class segment
+        -- on cip.epath) and pair them to replies on the same
+        -- conversation by signed-CIP seq (preferred) or the stock cip
+        -- dissector's conversation tracking (fallback).
+        -- field_cip_service() returns the FIRST cip.service instance.
+        -- On a signed frame that's the outer 0x36/0xB6 wrapper service;
+        -- its range:offset() is in the original frame buffer (which is
+        -- what we want, since FieldInfo offsets for fields emitted by
+        -- the recursed inner cip dissection are relative to a synthetic
+        -- sub-tvb and aren't directly usable here). The outer 0x36/0xB6
+        -- and inner 0x53/0xD3 services happen to share directionality
+        -- (request services are < 0x80, replies >= 0x80), so the same
+        -- svc < 0x80 check works for both signed and non-signed frames.
         local svc_fi = field_cip_service()
         if not svc_fi then return end
         local svc = svc_fi.value
-        -- 0x53 request / 0xD3 reply (read documentation), or other
-        -- read services touching 0x349.
-        if svc < 0x80 then return end   -- only the REPLY carries records
+
+        local seq = get_signed_seq(pinfo)
+
+        if svc < 0x80 then
+            -- Request frame. Remember it if it targets class 0x349 so
+            -- the eventual reply can be paired to it. We don't annotate
+            -- the request frame's tree (see the response_in comment
+            -- above the ProtoField declarations).
+            if not any_epath_targets_0349() then return end
+            session.record_request(pinfo, seq, 0x349)
+            return
+        end
+
+        -- Reply frame. Pair to its request.
+        local req = session.lookup_request(pinfo, seq, get_cip_request_frame())
+        if not req or req.class ~= 0x349 then return end
+        req.reply_frame = pinfo.number
 
         local svc_range = svc_fi.range
         if not svc_range then return end
         local cip_start = svc_range:offset()
         local cip_tvb = tvb:range(cip_start)
         -- Reply skeleton: svc(1) rsv(1) gen(1) ext_size(1) body...
-        if cip_tvb:len() < 4 then return end
-        local body = cip_tvb(4, cip_tvb:len() - 4)
+        -- On a signed frame the cip_tvb still includes the trailing
+        -- seq(4) + HMAC(20) bytes — trim them so the record walker
+        -- doesn't try to match record headers in HMAC noise. The
+        -- presence of pinfo.private["rockwell_cip.signed.seq"] is our
+        -- "this frame is signed" signal.
+        local cip_end = cip_tvb:len()
+        if seq ~= nil then cip_end = cip_end - 24 end
+        if cip_end < 4 then return end
+        local body = cip_tvb(4, cip_end - 4)
 
         local subtree = tree:add(proto, body,
             "Rockwell description records (class 0x0349)")
+        subtree:add(f.request_in, req.req_frame):set_generated()
 
         local pos = 0
         local count = 0
@@ -281,13 +346,15 @@ function M.register(proto, valstr, ctx)
             if not consumed then
                 -- Slide forward by 1 byte and try again. Per-record
                 -- alignment isn't padded — we resync at the next
-                -- marker.
-                local cm = u16_le(body, pos)
-                if DOC_CLASSES[cm] then
-                    -- We saw a class marker we should know but the
-                    -- layout didn't match either supported one.
-                    -- Probably OPSTR / SCOPED variant.
-                    skipped = skipped + 1
+                -- marker. Guard against OOB when there's < 2 bytes left.
+                if pos + 2 <= body:len() then
+                    local cm = u16_le(body, pos)
+                    if DOC_CLASSES[cm] then
+                        -- We saw a class marker we should know but the
+                        -- layout didn't match either supported one.
+                        -- Probably OPSTR / SCOPED variant.
+                        skipped = skipped + 1
+                    end
                 end
                 pos = pos + 1
             else

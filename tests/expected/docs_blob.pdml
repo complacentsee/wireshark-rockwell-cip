@@ -95,14 +95,14 @@
     <field name="tcp.port" showname="Source or Destination Port: 44818" hide="yes" size="2" pos="36" show="44818" value="af12"/>
     <field name="tcp.stream" showname="Stream index: 0" size="0" pos="34" show="0"/>
     <field name="tcp.stream.pnum" showname="Stream Packet Number: 1" size="0" pos="34" show="1"/>
-    <field name="tcp.completeness" showname="Conversation completeness: Incomplete (0)" size="0" pos="34" show="0">
+    <field name="tcp.completeness" showname="Conversation completeness: Incomplete (12)" size="0" pos="34" show="12">
       <field name="tcp.completeness.rst" showname="..0. .... = RST: Absent" size="0" pos="0" show="False"/>
       <field name="tcp.completeness.fin" showname="...0 .... = FIN: Absent" size="0" pos="0" show="False"/>
-      <field name="tcp.completeness.data" showname=".... 0... = Data: Absent" size="0" pos="0" show="False"/>
-      <field name="tcp.completeness.ack" showname=".... .0.. = ACK: Absent" size="0" pos="0" show="False"/>
+      <field name="tcp.completeness.data" showname=".... 1... = Data: Present" size="0" pos="0" show="True"/>
+      <field name="tcp.completeness.ack" showname=".... .1.. = ACK: Present" size="0" pos="0" show="True"/>
       <field name="tcp.completeness.syn-ack" showname=".... ..0. = SYN-ACK: Absent" size="0" pos="0" show="False"/>
       <field name="tcp.completeness.syn" showname=".... ...0 = SYN: Absent" size="0" pos="0" show="False"/>
-      <field name="tcp.completeness.str" showname="Completeness Flags: [ Null ]" size="0" pos="34" show="[ Null ]"/>
+      <field name="tcp.completeness.str" showname="Completeness Flags: ··DA··" size="0" pos="34" show="··DA··"/>
     </field>
     <field name="tcp.len" showname="TCP Segment Len: 110" size="0" pos="34" show="110"/>
     <field name="tcp.seq" showname="Sequence Number: 1    (relative sequence number)" size="4" pos="38" show="1" value="9b0cad63"/>
@@ -134,7 +134,7 @@
       <field name="tcp.time_relative" showname="Time since first frame in this TCP stream: 0.000000000 seconds" size="0" pos="34" show="0.000000000"/>
       <field name="tcp.time_delta" showname="Time since previous frame in this TCP stream: 0.000000000 seconds" size="0" pos="34" show="0.000000000"/>
     </field>
-    <field name="tcp.stream.client.contiguity_count" showname="Client Contiguous Streams: 0" size="0" pos="34" show="0"/>
+    <field name="tcp.stream.client.contiguity_count" showname="Client Contiguous Streams: 1" size="0" pos="34" show="1"/>
     <field name="tcp.stream.server.contiguity_count" showname="Server Contiguous Streams: 1" size="0" pos="34" show="1"/>
     <field name="tcp.payload" showname="TCP payload (110 bytes)" size="110" pos="54" show="70:00:56:00:ae:75:01:40:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:00:01:00:02:00:a1:00:04:00:14:48:f6:ff:b1:00:42:00:05:00:36:02:20:02:24:01:53:03:21:00:49:03:24:00:01:01:00:00:00:00:00:00:09:00:ff:ff:8e:00:01:00:00:00:00:00:00:00:00:00:1a:00:03:00:00:00:0f:8a:27:50:ee:6d:5a:b5:0e:30:e0:44:9b:eb:1c:7f:8c:2f:fb:ec" value="70005600ae750140000000000000000000000000000000000000000001000200a10004001448f6ffb10042000500360220022401530321004903240001010000000000000900ffff8e00010000000000000000001a00030000000f8a2750ee6d5ab50e30e0449beb1c7f8c2ffbec"/>
     <field name="tcp.pdu.size" showname="PDU Size: 110" size="110" pos="54" show="110" value="70005600ae750140000000000000000000000000000000000000000001000200a10004001448f6ffb10042000500360220022401530321004903240001010000000000000900ffff8e00010000000000000000001a00030000000f8a2750ee6d5ab50e30e0449beb1c7f8c2ffbec"/>
@@ -162,12 +162,7 @@
           <field name="cip.seq" showname="CIP Sequence Count: 5" size="2" pos="98" show="5" value="0500"/>
         </field>
       </field>
-      <field name="_ws.expert" showname="Expert Info (Note/Protocol): CIP request without a response" size="0" pos="78">
-        <field name="cip.analysis.request_no_response" showname="CIP request without a response" size="0" pos="0" show="" value=""/>
-        <field name="_ws.expert.message" showname="Message: CIP request without a response" hide="yes" size="0" pos="0" show="CIP request without a response"/>
-        <field name="_ws.expert.severity" showname="Severity level: Note" size="0" pos="0" show="4194304"/>
-        <field name="_ws.expert.group" showname="Group: Protocol" size="0" pos="0" show="150994944"/>
-      </field>
+      <field name="enip.response_in" showname="Response In: 3" size="0" pos="78" show="3"/>
     </field>
   </proto>
   <proto name="cip" showname="Common Industrial Protocol" size="64" pos="100">
@@ -349,14 +344,14 @@
     <field name="tcp.port" showname="Source or Destination Port: 61851" hide="yes" size="2" pos="40" show="61851" value="f19b"/>
     <field name="tcp.stream" showname="Stream index: 0" size="0" pos="38" show="0"/>
     <field name="tcp.stream.pnum" showname="Stream Packet Number: 2" size="0" pos="38" show="2"/>
-    <field name="tcp.completeness" showname="Conversation completeness: Incomplete (8)" size="0" pos="38" show="8">
+    <field name="tcp.completeness" showname="Conversation completeness: Incomplete (12)" size="0" pos="38" show="12">
       <field name="tcp.completeness.rst" showname="..0. .... = RST: Absent" size="0" pos="0" show="False"/>
       <field name="tcp.completeness.fin" showname="...0 .... = FIN: Absent" size="0" pos="0" show="False"/>
       <field name="tcp.completeness.data" showname=".... 1... = Data: Present" size="0" pos="0" show="True"/>
-      <field name="tcp.completeness.ack" showname=".... .0.. = ACK: Absent" size="0" pos="0" show="False"/>
+      <field name="tcp.completeness.ack" showname=".... .1.. = ACK: Present" size="0" pos="0" show="True"/>
       <field name="tcp.completeness.syn-ack" showname=".... ..0. = SYN-ACK: Absent" size="0" pos="0" show="False"/>
       <field name="tcp.completeness.syn" showname=".... ...0 = SYN: Absent" size="0" pos="0" show="False"/>
-      <field name="tcp.completeness.str" showname="Completeness Flags: ··D···" size="0" pos="38" show="··D···"/>
+      <field name="tcp.completeness.str" showname="Completeness Flags: ··DA··" size="0" pos="38" show="··DA··"/>
     </field>
     <field name="tcp.len" showname="TCP Segment Len: 0" size="0" pos="38" show="0"/>
     <field name="tcp.seq" showname="Sequence Number: 1    (relative sequence number)" size="4" pos="42" show="1" value="4176dbeb"/>
@@ -393,7 +388,7 @@
       <field name="tcp.analysis.ack_rtt" showname="The RTT to ACK the segment was: 1.433000 milliseconds" size="0" pos="38" show="0.001433000"/>
     </field>
     <field name="tcp.stream.client.contiguity_count" showname="Client Contiguous Streams: 1" size="0" pos="38" show="1"/>
-    <field name="tcp.stream.server.contiguity_count" showname="Server Contiguous Streams: 0" size="0" pos="38" show="0"/>
+    <field name="tcp.stream.server.contiguity_count" showname="Server Contiguous Streams: 1" size="0" pos="38" show="1"/>
   </proto>
   <proto name="fake-field-wrapper">
     <field name="_ws.lua.fake" showname="Wireshark Lua fake item" hide="yes" size="0" pos="0" show="" value=""/>
@@ -643,6 +638,10 @@
     </field>
     <field name="rockwell_cip.signed.hmac_status" showname="HMAC Validation: (no key — set rockwell_cip.hmac_key preference)" size="0" pos="104" show="(no key — set rockwell_cip.hmac_key preference)"/>
   </proto>
+  <proto name="rockwell_cip" showname="Rockwell description records (class 0x0349)" size="12" pos="108">
+    <field name="rockwell_cip.docs.request_in" showname="Request In: 1" size="0" pos="108" show="1"/>
+    <field name="rockwell_cip.docs.records_count" showname="Record Count: 0" size="0" pos="108" show="0"/>
+  </proto>
 </packet>
 
 
@@ -814,12 +813,7 @@
           <field name="cip.seq" showname="CIP Sequence Count: 6" size="2" pos="98" show="6" value="0600"/>
         </field>
       </field>
-      <field name="_ws.expert" showname="Expert Info (Note/Protocol): CIP request without a response" size="0" pos="78">
-        <field name="cip.analysis.request_no_response" showname="CIP request without a response" size="0" pos="0" show="" value=""/>
-        <field name="_ws.expert.message" showname="Message: CIP request without a response" hide="yes" size="0" pos="0" show="CIP request without a response"/>
-        <field name="_ws.expert.severity" showname="Severity level: Note" size="0" pos="0" show="4194304"/>
-        <field name="_ws.expert.group" showname="Group: Protocol" size="0" pos="0" show="150994944"/>
-      </field>
+      <field name="enip.response_in" showname="Response In: 6" size="0" pos="78" show="6"/>
     </field>
   </proto>
   <proto name="cip" showname="Common Industrial Protocol" size="42" pos="100">
@@ -1472,12 +1466,7 @@
           <field name="cip.seq" showname="CIP Sequence Count: 7" size="2" pos="98" show="7" value="0700"/>
         </field>
       </field>
-      <field name="_ws.expert" showname="Expert Info (Note/Protocol): CIP request without a response" size="0" pos="78">
-        <field name="cip.analysis.request_no_response" showname="CIP request without a response" size="0" pos="0" show="" value=""/>
-        <field name="_ws.expert.message" showname="Message: CIP request without a response" hide="yes" size="0" pos="0" show="CIP request without a response"/>
-        <field name="_ws.expert.severity" showname="Severity level: Note" size="0" pos="0" show="4194304"/>
-        <field name="_ws.expert.group" showname="Group: Protocol" size="0" pos="0" show="150994944"/>
-      </field>
+      <field name="enip.response_in" showname="Response In: 9" size="0" pos="78" show="9"/>
     </field>
   </proto>
   <proto name="cip" showname="Common Industrial Protocol" size="36" pos="100">
@@ -2118,12 +2107,7 @@
           <field name="cip.seq" showname="CIP Sequence Count: 8" size="2" pos="98" show="8" value="0800"/>
         </field>
       </field>
-      <field name="_ws.expert" showname="Expert Info (Note/Protocol): CIP request without a response" size="0" pos="78">
-        <field name="cip.analysis.request_no_response" showname="CIP request without a response" size="0" pos="0" show="" value=""/>
-        <field name="_ws.expert.message" showname="Message: CIP request without a response" hide="yes" size="0" pos="0" show="CIP request without a response"/>
-        <field name="_ws.expert.severity" showname="Severity level: Note" size="0" pos="0" show="4194304"/>
-        <field name="_ws.expert.group" showname="Group: Protocol" size="0" pos="0" show="150994944"/>
-      </field>
+      <field name="enip.response_in" showname="Response In: 12" size="0" pos="78" show="12"/>
     </field>
   </proto>
   <proto name="cip" showname="Common Industrial Protocol" size="42" pos="100">

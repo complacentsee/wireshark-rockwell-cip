@@ -126,6 +126,14 @@ function M.register(proto, valstr, ctx)
         local last = cip_tvb:len()
         if last < offset + trailer then return end
 
+        -- Surface the trailing seq to sibling dissectors via
+        -- pinfo.private. We need it available BEFORE we recurse into
+        -- the inner cip dissector, because callbacks that fire on the
+        -- inner-CIP fields (e.g. class_0349_docs pairing request to
+        -- reply) read it. pinfo.private values are string-typed.
+        local seq_value = cip_tvb(last - trailer, 4):le_uint()
+        pinfo.private["rockwell_cip.signed.seq"] = tostring(seq_value)
+
         local mac_start = 0
         if svc == 0x36 then
             local path_words = cip_tvb(offset, 1):uint()
