@@ -15,18 +15,21 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-              tshark luarocks lua5.3 lua-zlib
+              tshark luarocks lua5.3
           sudo luarocks install luacheck
 
       - name: Lint Lua sources
-        run: |
-          luacheck plugins/lua --no-unused-args --globals proto Proto ProtoField \
-              Dissector DissectorTable base UInt64 Int64 require io
+        # Config is read from plugins/lua/.luacheckrc
+        run: luacheck plugins/lua
 
       - name: Verify constants are in sync with Python source
         run: python3 tools/sync_constants.py --check
 
       - name: Run dissector tests
+        # The harness skips cleanly when ROCKWELL_CIP_FIXTURES is unset
+        # or empty (pcaps are intentionally not committed). The job
+        # still verifies the dissector loads cleanly and the test
+        # plumbing itself is healthy.
         run: |
           python3 -m pip install --user pytest
           python3 -m pytest tests/ -v

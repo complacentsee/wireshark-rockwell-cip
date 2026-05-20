@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -85,6 +86,28 @@ def fixtures_dir() -> pathlib.Path:
     return FIXTURES
 
 
+_PDML_HEADER_RE = re.compile(
+    r'<pdml version="[^"]*" creator="[^"]*" time="[^"]*" capture_file="[^"]*">'
+)
+_STYLESHEET_COMMENT_RE = re.compile(r'<!-- You can find pdml2html\.xsl[^>]*-->')
+
+
+def _normalize_pdml(text: str, fixture_name: str) -> str:
+    """Strip volatile bits so the diff stays meaningful across hosts.
+
+    Volatile across machines / runs:
+    - The stylesheet-hint comment names a host-specific share path.
+    - The <pdml> open tag carries the run timestamp, the tshark version,
+      and the absolute capture-file path.
+    Frame timestamps inside the body come from the pcap itself and are
+    stable across runs of the same input.
+    """
+    text = _STYLESHEET_COMMENT_RE.sub('', text)
+    text = _PDML_HEADER_RE.sub(
+        f'<pdml capture_file="{fixture_name}">', text)
+    return text
+
+
 def run_tshark(tshark_bin: str, plugin_path: pathlib.Path,
                fixture: pathlib.Path) -> str:
     """Run tshark with our Lua plugin and return PDML output as text."""
@@ -96,8 +119,12 @@ def run_tshark(tshark_bin: str, plugin_path: pathlib.Path,
         # Disable name resolution so PDML output is stable across runs.
         "-n",
     ]
-    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-    return result.stdout
+    # Pin TZ to UTC so frame.time's local-time `show=` field doesn't
+    # vary by host timezone. UTC arrival fields are already stable.
+    env = {**os.environ, "TZ": "UTC"}
+    result = subprocess.run(cmd, check=True, capture_output=True, text=True,
+                            env=env)
+    return _normalize_pdml(result.stdout, fixture.name)
 
 
 @pytest.fixture
