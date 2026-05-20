@@ -1,0 +1,29 @@
+# Pcaps with live PLC traffic — sanitised fixtures go in tests/fixtures/
+# only, after running tools/sanitize_pcap.py.
+*.pcap
+*.pcapng
+!tests/fixtures/*.pcapng
+
+# Python / pytest scratch
+__pycache__/
+*.pyc
+.pytest_cache/
+.tox/
+.venv/
+venv/
+
+# Wireshark / tshark scratch output
+*.pdml.actual
+*.pdml.diff
+
+# Out-of-tree C build output
+proto-c/build/
+proto-c/*.o
+proto-c/*.so
+proto-c/*.dylib
+
+# Editor / OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Wireshark CLI (tshark) + Lua linter
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              tshark luarocks lua5.3 lua-zlib
+          sudo luarocks install luacheck
+
+      - name: Lint Lua sources
+        run: |
+          luacheck plugins/lua --no-unused-args --globals proto Proto ProtoField \
+              Dissector DissectorTable base UInt64 Int64 require io
+
+      - name: Verify constants are in sync with Python source
+        run: python3 tools/sync_constants.py --check
+
+      - name: Run dissector tests
+        run: |
+          python3 -m pip install --user pytest
+          python3 -m pytest tests/ -v
+
+  proto-c-builds:
+    runs-on: ubuntu-latest
+    if: false   # enable when proto-c/ has actual source to compile
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Wireshark headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              wireshark-dev cmake build-essential
+      - name: Build out-of-tree plugin
+        run: |
+          cmake -S proto-c -B proto-c/build
+          cmake --build proto-c/build
