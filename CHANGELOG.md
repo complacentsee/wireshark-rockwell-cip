@@ -49,9 +49,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Value-string tables for Rockwell-private CIP services and classes
   (`plugins/lua/util/valstr.lua`).
 - `tools/sync_constants.py` — codegen scaffold that will pull service /
-  class / record layout constants from
-  `logix_fw/cip_upload/extract_logix_data.py` once the Python side
-  exports them at module scope.
+  class / record layout constants from the out-of-tree Python
+  extractor (`extract_logix_data.py`) once the Python side exports
+  them at module scope.
 - `tools/derive_hmac_key.py` — offline derivation of the Path-A 64B
   session HMAC key for users who'd rather paste it into the existing
   `rockwell_cip.hmac_key` preference than configure the RSA-key path.

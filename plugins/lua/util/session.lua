@@ -70,7 +70,8 @@ function M.get(pinfo)
             -- Class 0x0349 paginated-read accumulator state. The 0x53
             -- reply on class 0x349 is a stream of fixed-stride pages
             -- (v36: 458B) whose record bodies routinely straddle page
-            -- boundaries — see cip_upload/extract_logix_data.py:1090.
+            -- boundaries — see extract_logix_data.py:1090 in the
+            -- out-of-tree Python parser.
             -- Pagination is driven by the client's request-offset and
             -- there is no per-chunk header on the wire to key off
             -- frame-globally, so each accumulator is scoped to a

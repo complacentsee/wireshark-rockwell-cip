@@ -1,9 +1,8 @@
 -- SPDX-License-Identifier: GPL-2.0-or-later
 --
 -- valstr.lua — value-string tables for Rockwell-private CIP services,
--- classes, and enum-like fields. Kept in one place so the Python
--- extractor in the companion logix_fw/cip_upload repo can drive
--- regeneration via tools/sync_constants.py.
+-- classes, and enum-like fields. Kept in one place so the out-of-tree
+-- Python extractor can drive regeneration via tools/sync_constants.py.
 
 local M = {}
 

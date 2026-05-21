@@ -9,8 +9,8 @@
 -- six header layouts identified by a class_marker u16 at +0 telling us
 -- which kind of entity is being documented.
 --
--- Layouts (see logix_fw/cip_upload/extract_logix_data.py for the
--- authoritative parser this dissector mirrors):
+-- Layouts (see extract_logix_data.py in the out-of-tree Python parser
+-- for the authoritative implementation this dissector mirrors):
 --
 --   LAYOUT_36 (operand-bit comments on controller-scope tags):
 --     +0   u16  class_marker (== target class id, e.g. 0x006B)

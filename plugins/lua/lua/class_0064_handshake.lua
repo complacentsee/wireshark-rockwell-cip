@@ -16,8 +16,8 @@
 --                     (license_status u16 at the tail).
 --
 -- Algorithm (Path-A KDF, recovered from firmware FUN_f4190f00 — see
--- ../../../logix_fw/cip_upload/hmac_connect.py:1-49,106-122 for the
--- authoritative reference):
+-- hmac_connect.py:1-49,106-122 in the out-of-tree Python parser for
+-- the authoritative reference):
 --
 --   1. PLC issues 128B `challenge_nonce` — that's the CIPHERTEXT of
 --      RSA-encrypting a 128B plaintext blob with the *client*'s public

@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Regenerate plugins/lua/util/valstr.lua from the Python extractor.
 
-The Python extractor in ~/logix_fw/cip_upload/extract_logix_data.py is
-the source of truth for record layouts, service IDs, class IDs, and the
-operand-bit encoding constants. Hand-syncing those values into Lua would
-drift the moment someone touched the parser; this script reads the
-Python module, pulls the constants it cares about, and regenerates the
-Lua tables.
+The out-of-tree Python extractor (`extract_logix_data.py`) is the
+source of truth for record layouts, service IDs, class IDs, and the
+operand-bit encoding constants. Hand-syncing those values into Lua
+would drift the moment someone touched the parser; this script reads
+the Python module, pulls the constants it cares about, and regenerates
+the Lua tables. Point the EXTRACTOR_PATH env var at the parser's
+location to run it.
 
 Invocation:
     tools/sync_constants.py             # rewrites the Lua file in place

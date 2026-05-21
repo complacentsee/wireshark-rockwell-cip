@@ -1,10 +1,9 @@
 # Rockwell vendor-private CIP — protocol overview
 
 This document is the working reference for what the dissector targets.
-The authoritative implementation of these formats lives in the
-companion repository `logix_fw/cip_upload` (Python extractor and L5X
-builder). Anything here is a summary of what's been reverse-engineered
-there.
+The authoritative implementation of these formats lives in an
+out-of-tree Python extractor / L5X builder; anything here is a summary
+of what's been reverse-engineered against that reference.
 
 ## Transports
 
@@ -132,9 +131,9 @@ on class 0x0064 (Logix Controller):
    requests starting at seq=1.
 
 The firmware accepts a second Phase 2 variant (`SHA-1(plaintext[0:20])`)
-that grants privileged access without enabling signing. The companion
-Python module documents both — see `logix_fw/cip_upload/hmac_connect.py`
-for the authoritative implementation, including the firmware function
+that grants privileged access without enabling signing. See
+`hmac_connect.py` in the out-of-tree Python parser for the
+authoritative implementation, including the firmware function
 mapping (`FUN_f4190f00`).
 
 ### Validating HMACs in the dissector

@@ -122,6 +122,18 @@ def run_tshark(tshark_bin: str, plugin_path: pathlib.Path,
         # rockwell_cip.docs.response_in on the request frame, populated
         # only after the matching reply has been seen) render in PDML.
         "-2",
+        # Pin protocol preferences to a known clean state so the test
+        # output doesn't drift based on whatever the user has set in
+        # their personal ~/.config/wireshark/preferences. The carved
+        # fixtures were captured with HMAC validation disabled; pinning
+        # both key sources empty keeps the goldens stable even if a
+        # developer set the RSA key in the GUI for ad-hoc dissection.
+        "-o", "rockwell_cip.client_rsa_key_file:",
+        "-o", "rockwell_cip.hmac_key:",
+        # Force-off the optional zlib-inflate preference (which the
+        # user may have enabled in the GUI for upload-body inspection)
+        # so the upload_3a_seq golden stays stable.
+        "-o", "rockwell_cip.inflate:FALSE",
     ]
     # Pin TZ to UTC so frame.time's local-time `show=` field doesn't
     # vary by host timezone. UTC arrival fields are already stable.

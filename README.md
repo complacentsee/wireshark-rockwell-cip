@@ -141,8 +141,7 @@ GPL-2.0-or-later, matching Wireshark itself. See `LICENSE`.
 
 ## Acknowledgements
 
-Built from reverse-engineering notes in the companion
-[`logix_fw/cip_upload`](https://github.com/) project's PCAP_FINDINGS.md
-and ROUTINE_UPLOAD_V36_FINDINGS.md. The Python extractor in that repo
-remains the source-of-truth implementation; this dissector is a
-read-only view of the same wire formats.
+Built from reverse-engineering notes against an out-of-tree Python
+extractor that remains the source-of-truth implementation for these
+wire formats; this dissector is a read-only view of the same protocol
+surface.
