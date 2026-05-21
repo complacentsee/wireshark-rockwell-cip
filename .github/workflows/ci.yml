@@ -22,8 +22,10 @@ jobs:
           sudo luarocks install luacheck
 
       - name: Lint Lua sources
-        # Config is read from plugins/lua/.luacheckrc
-        run: luacheck plugins/lua
+        # luacheck reads .luacheckrc from its CWD, not from the
+        # checked tree — cd into plugins/lua so the committed config
+        # (Wireshark Lua globals etc.) is picked up.
+        run: cd plugins/lua && luacheck .
 
       - name: Verify constants are in sync with Python source
         run: python3 tools/sync_constants.py --check
