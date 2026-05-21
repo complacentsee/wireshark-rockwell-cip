@@ -14,8 +14,11 @@ jobs:
       - name: Install Wireshark CLI (tshark) + Lua linter
         run: |
           sudo apt-get update
+          # liblua5.3-dev provides the headers luarocks needs to build
+          # the luacheck rock; without it luarocks errors out with
+          # "Failed finding Lua header files".
           sudo apt-get install -y --no-install-recommends \
-              tshark luarocks lua5.3
+              tshark luarocks lua5.3 liblua5.3-dev
           sudo luarocks install luacheck
 
       - name: Lint Lua sources
