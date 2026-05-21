@@ -130,7 +130,7 @@ function M.register(proto, valstr, ctx)
     local field_cip_class    = Field.new("cip.class")
     local field_cip_attr     = Field.new("cip.attribute")
 
-    local function annotate_attrs(tvb, pinfo, tree)
+    local function annotate_attrs(_tvb, _pinfo, tree)
         local cl_fi = field_cip_class()
         if not cl_fi then return end
         local class = cl_fi.value

@@ -37,7 +37,6 @@ local M = {}
 local LIMB_BITS  = 16
 local LIMB_BASE  = 65536
 local LIMB_MASK  = 65535
-local HALF_BASE  = 32768   -- 1 << 15
 
 local function new_zero() return { n = 0 } end
 
@@ -337,17 +336,17 @@ function M.modinv(a, m)
     local old_s_sign, old_s = 1, M.from_int(1)
     local s_sign, s = 1, M.from_int(0)
 
-    local function signed_add(a_sign, a, b_sign, b)
-        -- Returns (sign, magnitude) of a_sign*a + b_sign*b.
-        if a_sign == b_sign then
-            return a_sign, M.add(a, b)
+    local function signed_add(x_sign, x, y_sign, y)
+        -- Returns (sign, magnitude) of x_sign*x + y_sign*y.
+        if x_sign == y_sign then
+            return x_sign, M.add(x, y)
         end
         -- Opposite signs: subtract smaller from larger.
-        local c = M.cmp(a, b)
+        local c = M.cmp(x, y)
         if c >= 0 then
-            return a_sign, M.sub(a, b)
+            return x_sign, M.sub(x, y)
         end
-        return b_sign, M.sub(b, a)
+        return y_sign, M.sub(y, x)
     end
 
     while not M.is_zero(r) do

@@ -267,10 +267,6 @@ function M.register(proto, valstr, ctx)
     -- each reply), so it has to read bytes by index rather than by tvb
     -- range. `pos` is 0-based to match the layout docstrings above;
     -- string.byte's 1-based indexing is hidden behind these helpers.
-    local function s_byte(s, pos)
-        return string.byte(s, pos + 1)
-    end
-
     local function s_u16_le(s, pos)
         return string.byte(s, pos + 1)
              | (string.byte(s, pos + 2) << 8)

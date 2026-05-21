@@ -7,13 +7,14 @@ read_globals = {
     "Dissector", "DissectorTable",
     "Field", "Tvb", "ByteArray",
     "Pref",
-    "base", "expert",
+    "base", "expert", "frametype",
     "register_postdissector",
     "UInt64", "Int64",
 }
 
 -- Per-packet dissector code naturally has tight loops with locals
 -- that aren't all used on every path.
-ignore = {"212/_.*"}   -- unused arg names starting with underscore
-
-files["plugins/lua/rockwell_cip.lua"] = {}
+ignore = {
+    "212/_.*",   -- unused arg names with underscore prefix
+    "211/_.*",   -- unused locals with underscore prefix
+}

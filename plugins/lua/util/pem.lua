@@ -41,11 +41,11 @@ end
 
 local function base64_decode(s)
     -- Strip whitespace.
-    s = s:gsub("[%s\r\n]", "")
-    -- Strip padding for the bit math; we'll account for it via the
-    -- output truncation.
-    local pad = 0
-    s, pad = s:gsub("=+$", "")
+    s = (s:gsub("[%s\r\n]", ""))
+    -- Strip padding for the bit math; the bit-loop emits 8 bits at a
+    -- time and naturally stops short of the padded tail, so we just
+    -- discard the '=' characters without tracking how many there were.
+    s = (s:gsub("=+$", ""))
     local out = {}
     local buf, bits = 0, 0
     for i = 1, #s do
@@ -149,7 +149,7 @@ local function parse_rsa_private_key_der(seq_body)
     local q;    q,    pos = read_integer(seq_body, pos)
     local dp;   dp,   pos = read_integer(seq_body, pos)
     local dq;   dq,   pos = read_integer(seq_body, pos)
-    local qinv; qinv, pos = read_integer(seq_body, pos)
+    local qinv = (read_integer(seq_body, pos))
     return {
         n = n, e = e, d = d,
         p = p, q = q,
@@ -163,13 +163,13 @@ end
 -- that itself parses as RSAPrivateKey is accepted.
 local function unwrap_pkcs8(seq_body)
     local pos = 1
+    local _   -- throwaway for skipped-field values
     -- Skip version INTEGER.
     _, pos = read_integer(seq_body, pos)
     -- Skip AlgorithmIdentifier SEQUENCE.
     _, pos = read_sequence(seq_body, pos)
     -- PrivateKey OCTET STRING, contains a DER-encoded RSAPrivateKey.
-    local octet
-    octet, _ = read_octet_string(seq_body, pos)
+    local octet = (read_octet_string(seq_body, pos))
     return (read_sequence(octet, 1))
 end
 

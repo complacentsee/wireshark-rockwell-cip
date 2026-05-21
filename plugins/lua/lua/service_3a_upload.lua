@@ -160,8 +160,8 @@ function M.register(proto, valstr, ctx)
         if body_range:len() < 4 then return end
         -- The body always starts with a 1B family marker (always 0x01 in
         -- the observed traffic) followed by the state byte.
-        local marker = body_range(0, 1):uint()
-        local state  = body_range(1, 1):uint()
+        local _marker = body_range(0, 1):uint()
+        local state   = body_range(1, 1):uint()
         subtree:add(f.state, body_range(1, 1))
 
         if not is_reply then

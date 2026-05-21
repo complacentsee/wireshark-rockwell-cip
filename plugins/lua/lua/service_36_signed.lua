@@ -135,7 +135,6 @@ function M.register(proto, valstr, ctx)
         local seq_value = cip_tvb(last - trailer, 4):le_uint()
         pinfo.private["rockwell_cip.signed.seq"] = tostring(seq_value)
 
-        local mac_start = 0
         if svc == 0x36 then
             local path_words = cip_tvb(offset, 1):uint()
             subtree:add(f.path_size, cip_tvb(offset, 1))
@@ -170,14 +169,14 @@ function M.register(proto, valstr, ctx)
             -- request looks just like an unwrapped one would.
             if cip_dis then
                 local inner_tvb = inner_range:tvb()
-                local ok = pcall(function()
+                -- Swallow inner-dispatch errors: a malformed inner
+                -- shouldn't derail the outer-frame tree we've already
+                -- built. The pcall return is intentionally discarded.
+                pcall(function()
                     cip_dis:call(inner_tvb, pinfo,
                         subtree:add(proto, inner_range,
                             "Inner CIP (decoded)"))
                 end)
-                if not ok then
-                    -- Don't let a bad inner derail the rest of the frame.
-                end
             end
             offset = offset + inner_len
         end

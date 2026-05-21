@@ -59,7 +59,7 @@
 
 local M = {}
 
-function M.register(proto, valstr, ctx)
+function M.register(proto, _valstr, ctx)
     local session = require "session"
 
     local f = {}
@@ -193,7 +193,7 @@ function M.register(proto, valstr, ctx)
     -- facing behaviour is identical.
     --
     -- Returns "derived" / "already-set" / "no-key" / "failed".
-    local function derive_hmac_key(sess, challenge_bytes, subtree)
+    local function derive_hmac_key(sess, challenge_bytes, _subtree)
         sess.keys_by_challenge = sess.keys_by_challenge or {}
         local cached = sess.keys_by_challenge[challenge_bytes]
         if cached then
