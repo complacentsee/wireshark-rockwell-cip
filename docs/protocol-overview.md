@@ -24,6 +24,63 @@ a valid Path-A session. Request layout:
 Reply is symmetric, service code 0xB6, gen_status / ext_status between
 the outer service and the inner CIP reply.
 
+### Service 0x37 — Audited mutation Send
+
+Used for any state-changing operation the controller writes to its audit
+log: task program-list edits (schedule/unschedule a program), program
+delete, online-edit submissions, mode changes, etc. Wraps a standard CIP
+request the same way 0x36 does but adds an 8-byte envelope between the
+outer-path bytes and the inner CIP request:
+
+```
+0x37                  service
+0x02                  path size (2 words)
+20 02 24 01           path: class 0x02 (Message Router) inst 1
+01 03 00 00 <LEN u32 LE>     audited-mutation envelope (LEN = bytes of inner)
+<inner CIP>           the actual request (LEN bytes)
+<seq u32 LE>          monotonic per session, shares counter with 0x36
+<HMAC-SHA1 20B>       HMAC over [outer header + envelope + inner + seq]
+```
+
+Reply is symmetric, service code 0xB7, gen_status byte at the standard
+offset. On a per-inner failure the outer status is `0x1E` (embedded
+service error) and the inner reply (after the envelope) carries the
+actual gen_status.
+
+The constant `01 03 00 00` prefix was identical across every captured
+0x37 frame across unschedule / reschedule / delete traces; treat as a
+fixed marker. The same envelope shape also appears inside some
+`0x36`-wrapped `0x4F` requests on Class 0x0349 during the delete
+sequence — i.e. it's a per-operation "audited" marker, not strictly
+tied to outer service 0x37.
+
+Common inner services seen under 0x37:
+
+| Inner svc | Path                        | Use                                         |
+|-----------|-----------------------------|----------------------------------------------|
+| 0x35      | Class 0x008E inst 1         | Audit log event write (UTF-16 text, see below) |
+| 0x04      | Class 0x0070 inst <task>    | Set_Attribute_List — Task program-list rewrite |
+| 0x09      | Class 0x0068 inst <prog>    | Delete program (children cascade)            |
+| 0x5C      | Class 0x008E inst 1         | Project path register (used in go-online)    |
+
+Audit log event payload (service 0x35 on Class 0x8E inst 1):
+
+```
+35 02 20 8E 24 01     service + path
+<subject_chars u16>   char count of the subject text
+<UTF-16LE text>       either "<subject>" (subject-only form)
+                      or "<subject>#<detail>" (detail form)
+[u16 NUL]             present only in the subject-only form
+```
+
+Typical subject strings:
+* `Changed Program Schedule on Task [ \<TaskName> ]` — paired with a
+  detail audit (`Changed Properties of Task [ \<TaskName> ]#Property
+  List:    Task Program List`) and a Set_Attribute_List write.
+* `Deleted Program [ \<ProgName> ]`
+* `Deleted Routine [ \<ProgName>\<RoutName> ]`
+* `Deleted Tag [ \<ProgName>\<TagName> ]`
+
 ### Service 0x3A — Compiled-body upload
 
 Used to read routine XML and the AOI source blob. Has its own framing
@@ -135,6 +192,67 @@ that grants privileged access without enabling signing. See
 `hmac_connect.py` in the out-of-tree Python parser for the
 authoritative implementation, including the firmware function
 mapping (`FUN_f4190f00`).
+
+### Edit-mode lifecycle (v36)
+
+The audit-log subsystem (Class 0x008E) is dormant after a fresh
+Phase 1/2 handshake. The client has to arm it via a six-step bring-up
+before mutating operations like program-delete will be accepted. From
+`delete_program_from_MainTask_Full.pcapng`:
+
+| # | Wrapper / Inner             | Path                                          | Body                                                    | Notes |
+|---|------------------------------|-----------------------------------------------|---------------------------------------------------------|-------|
+| 1 | **0x37** / 0x5C             | Class 0x008E inst 1                           | `98 00 00 00 00 00 00 00 <name_chars u16> <UTF-16LE>`   | Project / workstation path register. Returns CIP `0x06` BUSY in practice; the side effect of the call is what arms the state machine. **Must use 0x37 wrapper — 0x36 leaves the controller in a state where step 5 fails.** |
+| 2 | 0x36 / **0x4B**             | Class 0x0378 inst 1                           | 16-byte header `01 03 00 00 82 00 00 00 03 00 01 00 01 00 00 00` + three UTF-16 counted strings (user, app, role) | Client registration; reply data = u32 session token. |
+| 3 | 0x36 / **0x63**             | Class 0x008E inst 1                           | `<token u32 LE>`                                        | Session token bind / go-online. Pass `0x10` to go offline. |
+| 4 | 0x36 / **0x04**             | Class 0x00AC inst 1                           | `<attr_cnt=1 u16><attr=0x0A u16><unix_ts u32>`          | SetAttrList — workstation clock. |
+| 5 | 0x36 / **0x4B**             | Class 0x008E/1/Class 0x0074/1 (nested)        | full client certificate (same bytes as Phase 1)         | Claim **global** edit ownership. |
+| 6 | 0x36 / **0x55**             | Class 0x008E inst 1                           | (empty)                                                 | Audit log open. Reply data = `<handle u32 LE>`; thread this back into the close call. |
+
+Once step 6 succeeds, the audited-mutation surface is unlocked. A
+typical delete then runs:
+
+```
+0x36 / 0x4B  Class 0x68/<prog>/0x74/1     claim per-program ownership (00 01)
+GetAttrList   Class 0x00AC attr 1          read current edit sequence (u16)
+0x36 / 0x4F  Class 0x00AC inst 1          begin txn: <seq u16><type=2 u16>
+                                          reply tail has <allocated_id u16><02 00>
+0x36 / 0x55  Class 0x008E inst 1          audit log open → handle (u32)
+0x37 / 0x35  Class 0x008E inst 1          audit "Deleted Program [\<name>]"
+0x36 / 0x09  Class 0x0068 inst <prog>     delete program (controller cascades
+                                          all routines, tags, descriptions)
+0x36 / 0x59  Class 0x008E inst 1          audit log close: <handle u32 LE>
+                                          (BUSY 0x06 here is tolerated)
+0x36 / 0x58  Class 0x008E inst 1          finalize (sent twice)
+0x36 / 0x4F  Class 0x00AC inst 1          end txn: <allocated_id u16><02 00>
+0x36 / 0x4C  Class 0x68/<prog>/0x74/1     release per-program ownership
+0x36 / 0x4C  Class 0x008E/1/0x74/1        release global ownership
+0x36 / 0x63  Class 0x008E inst 1          go offline (val = 0x10)
+```
+
+Studio in `delete_tasks.pcapng` follows the same skeleton but also
+emits ~100 individual audits naming every routine and tag inside the
+program before the cascading delete; those audits aren't required for
+the delete to succeed (the single 0x09 cascades regardless), but they
+populate the controller's audit log with per-child entries.
+
+Per-program ownership (step `0x4B on 0x68/<prog>/0x74/1`) sometimes
+returns CIP status `0x05` (path destination unknown) — observed
+empirically. The delete still works; tolerate the 0x05 and proceed.
+
+### Edit transaction (Class 0x00AC)
+
+`begin` and `end` are both service `0x4F` on Class 0x00AC inst 1 with
+body `[<seq u16><type u16>]`. Type is `1` on v21 controllers, `2` on
+v36 (which adds the audit-log subsystem on top). The current `seq` is
+exposed as attribute 1 (read via GetAttrList before begin). The begin
+reply's tail carries the controller-allocated next id (`...<id u16>
+<type u16>` at offset `len-4`); use that allocated id for end.
+
+Request ids outside `[1, 0x7FFF]` are rejected with `0xFF` ext
+`0x2104`; ids ≤ current `seq` return `0x06` partial-transfer with
+`70 08 01 00 …` 32-byte records (one per pending uncommitted txn the
+controller is willing to disclose).
 
 ### Validating HMACs in the dissector
 

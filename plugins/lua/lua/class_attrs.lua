@@ -44,6 +44,45 @@
 --             26  AttributeNumber (u16)
 --             29  LocalIndex     (u16)
 --
+--   0x0070  Task Object (one instance per Logix Task)
+--             1   Program List   `[count u16][prog_inst u32]*count`
+--                 — the ordered list of programs scheduled under the task.
+--                   Rewriting this attribute is how Studio schedules /
+--                   unschedules programs (see service 0x37 schedule audits).
+--             2   Watchdog (u32)
+--             7   Priority (u32)
+--             8   Period   (u32)
+--             0C  Inhibit/Disable flag
+--             12,13  research (Studio reads them in its recon burst)
+--
+--   0x008E  Audit Log Object (per-controller)
+--             3   audit count or active-write flag (u16; observed 0x14=20)
+--             8   audit-log armed flag (u16; observed 0x01)
+--             10  audit-log handle counter (u16; observed 0x01)
+--           Used by services 0x55/0x58/0x59 (open/finalize/close) and
+--           0x35 (audit event write inside 0x37 wrapper).
+--
+--   0x00AC  Edit Transaction Object (one per controller)
+--             1   current edit sequence number (u16) — read this before
+--                 sending 0x4F begin-txn so the body has the right seq
+--             2   audit-tracking enabled flag (u16; v36=2, v21=1)
+--             3   last-edit timestamp (u32)
+--             7   pending-txn count (u32)
+--             9   edit-session flags (u32)
+--             10  workstation clock (u32 unix time) — written by SetAttrList
+--                 during go-online
+--
+--   0x0074  Edit Ownership (sub-object, nested under 0x008E inst 1 for
+--           "global edit lock" or under 0x0068/<prog> inst 1 for "per-
+--           program edit lock"). No standalone attribute reads; the
+--           class is acted on via service 0x4B (claim) + 0x4C (release).
+--
+--   0x0378  Client Session Registration. Service 0x4B with a 16-byte
+--           header `01 03 00 00 82 00 00 00 03 00 01 00 01 00 00 00`
+--           followed by three UTF-16 counted strings (user, app, role)
+--           returns a u32 session token. Token is then passed to
+--           service 0x63 on Class 0x008E to enter edit mode.
+--
 -- The annotation strategy is purely additive: we read cip.class +
 -- cip.attribute from the stock dissector's emitted fields and append a
 -- "Rockwell attribute hint" sub-tree with the friendly name. The user
@@ -84,6 +123,32 @@ local MSGPARAMS_ATTRS = {
     [0x29] = "LocalIndex (u16)",
 }
 
+local TASK_ATTRS = {
+    [0x01] = "Program List [count u16][prog_inst u32]*N",
+    [0x02] = "Watchdog (u32)",
+    [0x07] = "Priority (u32)",
+    [0x08] = "Period (u32)",
+    [0x0C] = "Inhibit / Disable flag",
+    [0x12] = "(research)",
+    [0x13] = "(research)",
+}
+
+local AUDIT_LOG_ATTRS = {
+    [0x03] = "audit count / active-write flag (u16)",
+    [0x08] = "audit-log armed flag (u16)",
+    [0x10] = "audit-log handle counter (u16)",
+}
+
+local EDIT_TXN_ATTRS = {
+    [0x01] = "Current Edit Sequence (u16) — read before 0x4F begin-txn",
+    [0x02] = "Audit-Tracking Type (u16; v21=1, v36=2)",
+    [0x03] = "Last-Edit Timestamp (u32)",
+    [0x05] = "(reserved / research)",
+    [0x07] = "Pending Transaction Count (u32)",
+    [0x09] = "Edit-Session Flags (u32)",
+    [0x0A] = "Workstation Clock (unix u32) — set during go-online",
+}
+
 local AOI_RLL_MAGIC = "UDIParameters\0"
 
 function M.register(proto, valstr, ctx)
@@ -94,6 +159,15 @@ function M.register(proto, valstr, ctx)
     f.msgparams_attr = ProtoField.string(
         "rockwell_cip.msgparams.attr_name",
         "MessageParameters Attribute (class 0x8D)")
+    f.task_attr = ProtoField.string(
+        "rockwell_cip.task.attr_name",
+        "Task Attribute (class 0x70)")
+    f.audit_log_attr = ProtoField.string(
+        "rockwell_cip.audit_log.attr_name",
+        "Audit Log Attribute (class 0x8E)")
+    f.edit_txn_attr = ProtoField.string(
+        "rockwell_cip.edit_txn.attr_name",
+        "Edit Transaction Attribute (class 0xAC)")
     f.udi_magic = ProtoField.bytes(
         "rockwell_cip.aoi.udi_magic",
         "UDIParameters magic", base.SPACE)
@@ -130,28 +204,34 @@ function M.register(proto, valstr, ctx)
     local field_cip_class    = Field.new("cip.class")
     local field_cip_attr     = Field.new("cip.attribute")
 
+    -- Class id → (attribute map, ProtoField for the hint string).
+    -- Ordering doesn't matter; lookup happens by class.
+    local CLASS_TABLES = {
+        [0x6C] = { TEMPLATE_ATTRS,    f.template_attr },
+        [0x8D] = { MSGPARAMS_ATTRS,   f.msgparams_attr },
+        [0x70] = { TASK_ATTRS,        f.task_attr },
+        [0x8E] = { AUDIT_LOG_ATTRS,   f.audit_log_attr },
+        [0xAC] = { EDIT_TXN_ATTRS,    f.edit_txn_attr },
+    }
+
     local function annotate_attrs(_tvb, _pinfo, tree)
         local cl_fi = field_cip_class()
         if not cl_fi then return end
         local class = cl_fi.value
-        if class ~= 0x6C and class ~= 0x8D then return end
+        local entry = CLASS_TABLES[class]
+        if not entry then return end
 
         local attr_fi = field_cip_attr()
         if not attr_fi then return end
         local attr = attr_fi.value
-        local map  = (class == 0x6C) and TEMPLATE_ATTRS or MSGPARAMS_ATTRS
+        local map, hint_field = entry[1], entry[2]
         local name = map[attr]
         if not name then return end
 
         local subtree = tree:add(proto, attr_fi.range,
             string.format("Rockwell attribute hint (class 0x%X)", class))
-        if class == 0x6C then
-            subtree:add(f.template_attr,
-                string.format("attr 0x%02X = %s", attr, name)):set_generated()
-        else
-            subtree:add(f.msgparams_attr,
-                string.format("attr 0x%02X = %s", attr, name)):set_generated()
-        end
+        subtree:add(hint_field,
+            string.format("attr 0x%02X = %s", attr, name)):set_generated()
     end
 
     local function decode_udi(buf, magic_off, subtree)

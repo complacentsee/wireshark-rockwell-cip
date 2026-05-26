@@ -9,16 +9,31 @@ local M = {}
 -- CIP service codes used in Studio 5000 ↔ ControlLogix traffic that
 -- aren't already named by Wireshark's stock cip dissector.
 M.services = {
+    [0x09] = "Delete Instance (Logix cascade)",
+    [0x35] = "Audit Log Event Write",
+    [0xB5] = "Audit Log Event Write Reply",
     [0x36] = "Signed Send (HMAC-SHA1 wrap)",
     [0xB6] = "Signed Send Reply",
+    [0x37] = "Audited Mutation Send (HMAC + envelope wrap)",
+    [0xB7] = "Audited Mutation Reply",
     [0x3A] = "Compiled Body Upload (Studio v36)",
     [0xBA] = "Compiled Body Upload Reply",
-    [0x4B] = "Get Instance Attribute List",
+    [0x4B] = "Get Instance Attribute List / Multi-Purpose Vendor",
     [0x4C] = "Read Template / Routine Body",
-    [0x4F] = "Read Source (v21 RLL/AOI)",
+    [0x4F] = "Edit Transaction Sub-Command (Class 0xAC) / Read Source (v21 RLL)",
     [0x52] = "Read Tag Fragmented / Read Routine",
     [0x53] = "Read Documentation",
+    [0x55] = "Audit Log Open",
+    [0xD5] = "Audit Log Open Reply",
+    [0x58] = "Audit Log Finalize",
+    [0xD8] = "Audit Log Finalize Reply",
+    [0x59] = "Audit Log Close",
+    [0xD9] = "Audit Log Close Reply",
+    [0x5C] = "Project Path Register (workstation name)",
+    [0xDC] = "Project Path Register Reply",
     [0x5D] = "Read Source (v36 inner)",
+    [0x63] = "Session Token Bind (go online / go offline)",
+    [0xE3] = "Session Token Bind Reply",
 }
 
 -- CIP class IDs Studio touches that aren't standard ODVA classes.
@@ -30,9 +45,34 @@ M.classes = {
     [0x006B] = "Symbol (Tag) Object",
     [0x006C] = "Template (UDT/AOI definition)",
     [0x006D] = "Routine Object",
+    [0x0070] = "Task Object",
+    [0x0073] = "Controller Status / Mode",
+    [0x0074] = "Edit Ownership (nested sub-object)",
     [0x008D] = "Message Parameters Object",
+    [0x008E] = "Audit Log Object",
+    [0x00AC] = "Edit Transaction Object (sequence / timestamp)",
     [0x0338] = "AddOnInstruction Definition",
     [0x0349] = "Documentation Object (description blob)",
+    [0x0378] = "Client Session Registration",
+}
+
+-- Class 0x00AC edit-transaction sub-command type, sent as the second
+-- u16 of a 0x4F request body. v21 toolkit uses type 1, v36 uses type 2.
+M.edit_txn_type = {
+    [0x0001] = "v21 edit (un-audited)",
+    [0x0002] = "v36 edit (audited)",
+}
+
+-- Studio's 8-byte "audited mutation" envelope header that prefixes the
+-- inner CIP request inside service 0x37 (and inside some 0x36-wrapped
+-- 0x4F requests on Class 0x0349). Constant across every captured frame.
+M.audited_envelope_magic = 0x00000301   -- bytes "01 03 00 00" LE-uint32
+
+-- Service 0x63 (session token bind) on Class 0x8E inst 1. Body is a u32;
+-- when ≥ 0x80000000 it's a session token returned from 0x4B on Class
+-- 0x0378; the literal value 0x10 means "go offline".
+M.session_bind_special = {
+    [0x00000010] = "Go offline (release session)",
 }
 
 -- 0x5D inner-service op codes carried in the 8-byte arg tail.
